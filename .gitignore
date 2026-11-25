@@ -30,6 +30,11 @@ config.local.xml
 # Local operating-system files
 .DS_Store
 Thumbs.db
+**/bin/
+**/obj/
+TestResults/
+artifacts/
+media-taxi.ini
 
 # Local-only agent guidance, shared rules, research documents, and prompt archives
 AGENTS*.md

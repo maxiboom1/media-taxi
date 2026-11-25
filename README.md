@@ -1,484 +1,211 @@
 # Media Taxi
 
-Version: **0.1.0**. Updated: **2026-11-25**.
+**0.2.0 · Windows x64 broadcast ingest · 2026-11-25**
 
-**Status: requirements and research baseline. The watchfolder service and dashboard
-have not been implemented yet.** Native .clip creation has been demonstrated with
-real production MXFs, and the user confirmed that the generated clips work on Tria
-after direct copying into its media folder.
+Media Taxi watches incoming media, creates Ross Tria/Abekas `.clip` files, attempts delivery to one to four servers, moves processed originals to Finished, and creates MP4 newsroom proxies. It runs as a console application with a commented INI file and read-only web dashboards. AMP Controller, Python and Ross DLLs are not runtime dependencies.
 
-Media Taxi will be an independent background ingest and delivery utility for Ross
-Tria. It will watch incoming media, copy compatible AVC-Intra essence into native
-Abekas `.clip` containers, optionally transcode incompatible sources, deliver the
-result to up to four destinations, archive completed sources, and create low-resolution
-MP4 previews for the Octopus newsroom workflow.
+The original investigation writer produced clips from six real production MXFs. The operator confirmed those clips played after direct copying to Tria's media folder. This release ports the format to C#. All six production fixtures also passed the C# parity checks and Ross reader validation. **The C# port and optional normalization still require an operator-controlled Tria playback check before unattended production use.**
 
-This README preserves the user's requirements and the investigation results so
-implementation can continue in a separate chat without losing context. Requirements,
-proposed defaults, and deferred decisions are identified below; descriptions of the
-future service are not claims that those components already exist.
+## Quick start
 
-## Relationship to AMP Controller
+1. Extract the self-contained Windows ZIP to a local folder on the RAID/10 GbE host.
+2. Edit `media-taxi.ini` beside `MediaTaxi.exe`: source/output folders, destination shares, Tria addresses and dashboard bind address. Relative paths resolve against the INI directory.
+3. Create the configured folders. Give the console account read/write/delete access to sources and local work/output folders, and create/write access to destination shares. Keep SQLite state local. If FFmpeg is absent from your package, put qualified `ffmpeg.exe` and `ffprobe.exe` at the configured paths.
+4. Validate configuration and start:
 
-Both applications are developed in one shared local Codex workspace, with
-independent repositories, versions, builds, and deployment:
-
-- **AMP Controller** owns Tria playback/transport controls and its existing Octopus
-  MOS integration.
-- **Media Taxi** owns watchfolder ingest, optional normalization, native wrapping,
-  delivery, source archival, proxies, persistent jobs, and delivery/inventory status.
-
-The tested OGP/openGear implementation in the local sibling folder
-`../AMP Controller/src/main/opengear/`
-is the reference for Tria inventory access. Reuse its protocol handling and tests
-with clear provenance. Media Taxi must run without the AMP Controller executable or
-source checkout being installed beside it. Any shared library should be versioned
-and independently packaged rather than accessed through a runtime sibling-source path.
-
-This chat's scope is exclusively Media Taxi. AMP Controller may be read for context;
-its files and repository must not be modified by Media Taxi work.
-
-Shared rules, AGENTS files, research documents, and prompt history remain local and
-are excluded from this repository. The README is the published requirements and
-investigation summary. Application source and necessary build/version metadata will
-be added when implementation begins.
-
-**Requirements gaps and the technology stack remain open for the next discussion.**
-This repository setup does not select a runtime, framework, or deployment stack.
-
-## Required processing sequence
-
-1. **Detect a new input** in the configured watch folder and create a dashboard row
-   immediately. Newest incoming items appear at the top.
-2. **Wait for a complete, stable source.** Do not process a file that is still copying
-   or growing. Keep this readiness stage distinct from a processing failure.
-3. **Probe the actual media**, including video codec/profile, geometry, frame rate,
-   scan mode, bit depth/chroma, audio, duration, and timecode.
-4. **Choose native rewrap or optional normalization.** Compatible AVC-Intra inputs
-   use the fast rewrap path. Incompatible inputs are transcoded only when explicitly
-   enabled in configuration; otherwise show a red `Format mismatch` status.
-5. **Create and validate one local canonical `.clip` artifact.** Preserve native
-   compressed video without re-encoding and preserve supported audio/timecodes.
-6. **Deliver that artifact independently to each enabled destination**, with separate
-   progress, verification, retry, and inventory confirmation state for each one.
-7. **Move the original completed source into the configured finished folder** once
-   the configured completion/archive policy is satisfied. Persist the new source path.
-8. **After the source move succeeds, generate the low-resolution MP4** into the
-   configured proxy folder and record its final path/URL for Octopus.
-9. **Continue monitoring inventory availability** so a later missing server copy can
-   be shown and, in a later version, re-sent without repeating successful stages.
-
-Proxy generation is a separate queued stage after successful archival. It must not
-consume the native-import queue's capacity or cause successful deliveries to be
-repeated merely because a proxy needs retrying.
-
-## Watchfolder and source readiness
-
-- The watch folder is configurable and local in the initial requirement. Network
-  paths may be supported, but must not weaken readiness/recovery behavior.
-- Use event notifications for responsiveness plus startup and periodic reconciliation
-  scans so missed notifications do not permanently miss incoming files.
-- Debounce duplicate create/change/rename events into one active job for the same
-  source instance. Do not enqueue one job for every filesystem notification.
-- Readiness settings must include a configurable stability interval and polling
-  cadence. Check size/mtime stability, readable/probeable media, and source identity
-  before and after processing. A paused copy can still look stable temporarily.
-- Where the producer supports it, a temporary upload name followed by a final rename
-  or explicit completion marker provides stronger completion signaling. Support a
-  classic stability-based fallback with retries for incomplete/truncated media.
-- The finished folder may be inside the watched folder. Exclude the entire resolved
-  finished subtree, working/cache folders, proxy output, and destination outputs from
-  ingestion. Avoid recursive ingestion of generated artifacts or archived sources.
-- If an input disappears before processing completes, record `Input missing` and
-  retain useful recovery state. An intentional archive move is a different event.
-- Keep unsupported/corrupt inputs visible with an actionable error. The exact
-  failed/quarantine-folder policy is a configuration/design decision, not an implicit
-  source deletion.
-
-## Native format and optional transcoding
-
-The first supported target is the format already demonstrated on the user's Tria:
-
-| Property                 | Initial supported target                                                      |
-| ------------------------ | ----------------------------------------------------------------------------- |
-| Container                | Native flat Abekas `.clip`, not renamed MXF                                   |
-| Video                    | AVC-Intra 100 / H.264 High 4:2:2 Intra                                        |
-| Picture                  | 1920x1080 progressive, 50 fps                                                 |
-| Pixel format             | 10-bit 4:2:2                                                                  |
-| Native AVC payload       | 568,832 bytes per access unit in the tested profile                           |
-| Native disk video record | 569,344 bytes including the tested 512-byte trailer                           |
-| Audio                    | Eight ordered AUK channels, 48 kHz, 32-bit sample words with 24-bit precision |
-| Stereo input             | Preserve channels 1/2 and make channels 3..8 silent                           |
-| Timecode                 | Preserve source start timecode using its actual base/drop-frame metadata      |
-
-Compatibility must be determined from the actual stream/frame structure, not the
-extension or an `h264` codec label alone. A native input must avoid video decoding
-and re-encoding in the conversion path. Lossless audio word-width normalization is
-allowed when required by AUK; do not mix channels or resample silently.
-
-When incoming-media transcoding is enabled, FFmpeg may normalize supported sources
-to the target before wrapping. Its output must satisfy the same target checks.
-Frame-rate, aspect-ratio, interlace, audio mapping, duration, and timecode policies
-must be explicit. An arbitrary hardware H.264 encoder is not automatically an
-AVC-Intra encoder. Qualify the selected FFmpeg build/profile against the proven
-format and actual Tria before claiming support for additional conversions.
-
-When transcoding is disabled, a mismatch must be red in the dashboard and must not
-silently trigger a lossy conversion. Preserve the source for correction or a later
-explicit retry. The initial service should accept supported input containers;
-"incoming file" does not mean every arbitrary file is decodable media.
-
-## Destinations and reliable publication
-
-- Support **one to four enabled destinations**, each with a stable ID, display name,
-  destination folder, associated Tria name/IP, inventory folder/namespace, and retry
-  policy. Display names such as `TLV1` and `TLV2` become dashboard column headings.
-- Build one canonical local `.clip`, then copy that same artifact to each server.
-  Re-delivery of this artifact preserves its UUID and bytes.
-- Transfers are independent. One inaccessible destination must not block successful
-  delivery to the others or unrelated jobs.
-- Copy under a temporary/non-final name, verify completion, and publish the final
-  name within the destination filesystem only after the file is complete. Tria must
-  not encounter a partially copied file with its final `.clip` name.
-- Persist each destination's attempt count, error, copied/verified state, inventory
-  state, retry schedule, expected path, and last successful confirmation.
-- Distinguish bytes copied from clip registered in Tria inventory. Allow a bounded
-  catalog-discovery delay before declaring an inventory problem.
-- Use UNC share paths where applicable and configure the Windows service account's
-  permissions. Do not assume interactive mapped drive letters exist for a service.
-
-**Archive/completion policy requires an explicit setting.** A proposed initial
-default is to archive after local validation and at least one successful destination
-delivery, keep unavailable destinations queued, and report yellow completion when
-the remaining required work finishes. If no destination succeeds, show `Awaiting
-delivery`. Alternatives such as all-required-destinations or local-artifact-plus-
-durable-retry should be deliberate policies. This proposal is not yet a fixed API.
-
-## Finished-source handling
-
-- Move completed sources from watch to the user-defined finished folder; this may
-  be a subfolder of watch, with exclusion rules preventing re-import loops.
-- Persist the job's archived source path and resume safely after interruption.
-- Handle name collisions according to a configured policy. Never silently overwrite
-  a different archived source with the same name.
-- A cross-volume "move" is copy, verify, then remove the original source only after
-  successful verification and a final source-identity check.
-- Archive failure is a distinct stage failure. Do not pretend the move succeeded
-  or start the required post-archive proxy stage before it actually succeeds.
-
-## Low-resolution MP4 and Octopus
-
-- After archival, create a low-resolution MP4 in the user-configured proxy folder.
-- Configure codec, resolution, frame rate, rate control/bitrate or quality, audio
-  selection/bitrate, encoder preset, and concurrency through the config file.
-- H.264 video with AAC audio is the proposed default. H.265 may be offered as a
-  documented option after testing the actual Octopus preview client/browser.
-- Publish complete MP4s under final names and place MP4 metadata for progressive
-  playback. Preserve correct picture/audio duration and the last video frame.
-- Generate previews that represent the delivered media. For normalized inputs,
-  define whether the proxy reads the normalized master or final clip; do not create
-  an unnoticed difference between Tria playout and newsroom preview.
-- A proxy failure must not discard successful Tria transfers. Queue that stage for
-  retry and show its status separately.
-- Define clip-to-proxy naming, configured base URL/path mapping, how Octopus obtains
-  that URL, and any required MOS integration. An MP4 appearing in a folder alone
-  does not complete the Octopus integration. AMP Controller's existing MOS ownership
-  must remain clear.
-- If Media Taxi serves previews itself, implement appropriate MP4 responses/range
-  handling; otherwise document the external web server's mapping.
-
-## Configuration
-
-All user settings must live in a **commented INI or XML file**. INI is the proposed
-initial choice. No configuration administration panel is required in the first
-stage; the browser UI is an activity dashboard.
-
-Document valid values, units, defaults, and restart/reload behavior. Validate the
-whole configuration at startup, including path overlap/exclusions, destination
-count, profile options, and worker limits. Record a configuration version/snapshot
-with jobs when changes could affect recovery.
-
-Configuration must cover:
-
-- Watch, finished, working/cache, failed/quarantine if used, and proxy folders.
-- Readiness timing, periodic scans, source filters, and incomplete-file handling.
-- Target format and the explicit allow/disable switch for incoming normalization.
-- One to four destinations with names, folder paths, Tria IPs, and inventory mapping.
-- Completion/archive policy, transfer verification, retries/backoff, and retention.
-- Native workers, incoming transcode workers, proxy workers, copy workers, per-server
-  copy limits, and FFmpeg threads/resource limits.
-- Proxy codec settings, output naming, and Octopus URL mapping.
-- Dashboard bind address/port, inventory polling/freshness, and logging.
-
-The following is an **illustrative requirements example**, not an implemented
-configuration schema or a deployment-ready file. Paths/IPs are placeholders.
-
-```ini
-[watch]
-path = C:\MediaTaxi\watch
-finished_path = C:\MediaTaxi\watch\finished
-; Exclude finished_path and every working/output subtree from ingestion.
-; Stability is a readiness heuristic, not proof that a producer has closed a file.
-stable_seconds = 15
-poll_seconds = 2
-reconcile_seconds = 30
-
-[native]
-target = avcintra100_1080p50
-; false: red Format mismatch. true: normalize supported incompatible input first.
-allow_input_transcode = false
-
-[workers]
-native_rewrap = 2
-input_transcode = 1
-proxy_transcode = 1
-destination_copy = 2
-copies_per_destination = 1
-ffmpeg_threads_per_process = 4
-
-[storage]
-work_path = C:\MediaTaxi\work
-clip_cache_path = C:\MediaTaxi\cache
-; Retention and minimum free-space rules must be validated during implementation.
-clip_cache_days = 7
-
-[delivery]
-; Proposed policy; other policies must be documented if implemented.
-archive_after = any_destination
-retry_initial_seconds = 30
-
-[proxy]
-output_path = C:\MediaTaxi\proxies
-base_url = http://media-taxi:8080/proxy/
-; Requested codec options: h264 or h265. h265 requires Octopus client testing.
-video_codec = h264
-; Rate control options to define: bitrate or crf; validate codec-specific ranges.
-rate_control = bitrate
-video_bitrate = 1200k
-width = 640
-height = 360
-fps = 50
-audio_codec = aac
-audio_bitrate = 128k
-; One-based source channel indexes, kept in this order.
-source_audio_channels = 1,2
-
-[destination.TLV1]
-enabled = true
-display_name = TLV1
-tria_ip = 192.0.2.11
-destination_path = \\TRIA-1\Media
-inventory_folder = IMPORTS
-
-[destination.TLV2]
-enabled = true
-display_name = TLV2
-tria_ip = 192.0.2.12
-destination_path = \\TRIA-2\Media
-inventory_folder = IMPORTS
-
-[dashboard]
-bind_address = 127.0.0.1
-port = 8080
+```powershell
+.\MediaTaxi.exe --version
+.\MediaTaxi.exe --validate-config
+.\MediaTaxi.exe
+# Alternative configuration location:
+.\MediaTaxi.exe --config 'D:\MediaTaxi\media-taxi.ini'
 ```
 
-INI settings are operator configuration. Job history, attempts, hashes, progress,
-and current availability belong in persistent runtime storage, not edits to the INI.
+Open the configured dashboard, for example `http://localhost:8080/`, and inspect `/admin` before dropping a test MXF into Watch. Stop with Ctrl+C. Configuration changes apply on restart. One process may use a given state directory at a time.
 
-## Minimal web dashboard
+The example INI uses local demonstration folders and documentation-only server addresses. Replace these before deployment. The dashboard has no authentication or operational commands; bind it to the intended broadcast LAN or localhost and restrict inbound access accordingly. This release does not install a Windows service or scheduled task.
 
-Serve a small, functional table with one row per incoming job and new rows at the
-top. Closing the browser must not stop the background service.
+## Processing contract
 
-Required columns:
+1. Discovery immediately creates a dashboard row. Watcher events prompt reconciliation; periodic complete scans remain authoritative.
+2. Wait for stable size/mtime for the configured interval and acquire a readable, deny-write source handle. Recheck source identity before using prepared media and moving the source. A file still open for writing waits.
+3. Probe actual video, audio, duration and start timecode. An H.264 label or filename extension alone is insufficient.
+4. Copy compatible native compressed video without re-encoding. If enabled, normalize a supported incompatible source to the qualified target first; otherwise route it to Failed with Format mismatch.
+5. Write and verify one local `<clip-name>.clip` in Abekas through a job-owned temporary name and no-replace publication.
+6. Attempt each destination independently, with global and per-destination worker limits. Hash-check copies before publishing final names. Recovery can recognize an identical completed publication; a different existing file is never overwritten.
+7. After all initial attempts, move the source to Finished, **even when every server copy failed**.
+8. After the move succeeds, generate `<clip-name>.mp4` in the proxy folder. Select audio channels explicitly and tag the MP4 with its owning job.
 
-- Incoming date/time and clip/source name.
-- Probed container/codec/format summary.
-- Overall processing stage and actionable error text when relevant.
-- Percentage/progress bar for incoming normalization where duration/progress permits.
-- One destination column per enabled configured destination, using its display name.
-- A separate proxy stage/link so delivery and preview availability remain visible.
+There is one automatic copy attempt per destination. A completed unsuccessful attempt is not retried after restart. There is no delayed delivery queue, automatic restoration or re-sync. Operators can manually copy the retained `.clip` to a missing destination by name.
 
-Required/proposed status meanings:
+Terminal ingest errors, unsupported formats and local name conflicts move the source to Failed. Failed-name collisions receive a unique suffix; the dashboard retains the original clip name. A source that physically cannot be moved stays visibly unresolved in Active and raises a system error. Rediscovery does not repeat conversion. A proxy failure after archival is reported separately; the already archived original stays in Finished.
 
-| Display                                 | Meaning                                                                                                 |
-| --------------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| Pending / Waiting for copy              | Source detected; readiness not yet satisfied                                                            |
-| Working / Probing / Rewrapping          | Native ingest stages are running                                                                        |
-| Transcoding with percentage             | Enabled incoming-media normalization is running                                                         |
-| Red Format mismatch                     | Input incompatible and normalization disabled                                                           |
-| Copying / Awaiting inventory            | Destination transfer or catalog confirmation pending                                                    |
-| Done, green                             | Required pipeline completed and all enabled destinations confirmed                                      |
-| Done, yellow                            | Required pipeline completed but one or more destinations failed/unconfirmed under the completion policy |
-| Red destination                         | Confirmed missing clip or failed delivery, with an explanation                                          |
-| Unknown / stale, gray or yellow         | Server/inventory unavailable; not proof the clip was deleted                                            |
-| Proxy queued / working / ready / failed | Separate preview generation state                                                                       |
+Existing archived sources and different local artifacts are never overwritten. To reuse a name, remove/archive its tracked source, allow two successful scans and owned local cleanup to finish, and resolve any destination-name conflict. Alternatively use a new basename. There is no resend control in this release.
 
-Use real stage progress where measurable: transcoder media time versus duration,
-copy bytes versus expected size, or an indeterminate indicator when a reliable
-percentage is unavailable. Do not invent a smooth percentage for unknown work.
+## Native format and investigation
 
-Keep historical processing outcome distinct from current availability. A delivered
-clip can remain historically complete while a server cell later becomes missing.
-Server-level connectivity/freshness should be visible without turning every row
-into a false deletion alarm.
+The native target is **AVC-Intra 100, 1920×1080 progressive, 50 fps, 10-bit 4:2:2**, with supported 48 kHz integer PCM audio. Native compressed video, PCM values, channel order, duration and source start timecode are preserved. Stereo occupies channels 1/2 and unused channels are silent. Ambiguous/multiple audio-stream layouts and unsupported mappings fail explicitly.
 
-## OGP/openGear inventory and future re-sync
+An Abekas `.clip` is not an MXF with a different extension. The qualified flat layout is:
 
-Use the existing tested OGP implementation as the first inventory reference. It
-uses TCP 5254, initialization/handshake, and complete `explorer.raw_clip_list` data.
-AMP inventory can be considered as a fallback; it is not the first integration task.
+| Part | Layout |
+|---|---|
+| Header | 32,768 bytes containing `AbekasClipMeta1` XML, UUID, track extents, video standard and striped start timecode |
+| Video | 568,832-byte AVC-Intra access unit plus 512 zero bytes; 569,344-byte record stride |
+| Audio | Eight 4,096-byte AUK channel records per video frame; each has a 32-byte header, 960 PCM32 samples and padding |
+| Storage | Flat video extent followed by audio extent; 24-bit precision carried in PCM32 |
 
-- Track each configured Tria independently and preserve the last valid inventory.
-- Process only complete, valid inventory responses as authoritative snapshots.
-- Mark data stale on disconnect/timeouts; never replace a valid list with a failed
-  or partial scan and infer that all clips disappeared.
-- A fresh list that no longer contains a previously confirmed clip should change
-  that destination's current status to missing/red.
-- Inventory currently exposes paths/names, not a guaranteed content/version identity.
-  Combine it with the service's own artifact/delivery records and explicit collision
-  policies. A green inventory name alone does not prove expected file contents.
-- Distinguish source disappearance from a later deletion on a Tria destination.
+The writer validates the qualified access-unit structure and fixed frame size throughout wrapping. It uses buffered sequential I/O and bounded media processes. Native wrapping avoids video encoding, but extraction, wrapping and verified copies still consume storage bandwidth. Throughput equivalence to Tria Importer requires measurement on the target RAID/network.
 
-**Deferred feature: per-clip re-sync controls.** The persistent model must support
-them from the beginning. A future action should resend the retained verified clip
-only to missing/failed selected destinations, retaining successful deliveries and
-avoiding another rewrap/transcode. If no retained artifact exists, explain whether
-the archived source can regenerate it or recovery is unavailable.
+The independent reader supports this flat layout for recovery/proxy generation. Sparse, externally referenced, virtual and unsupported edited/trimmed layouts are rejected. This is a qualified format implementation rather than a decoder for every Abekas variant.
 
-Automatic healing after deletion should be opt-in: an operator may intentionally
-delete a server copy. The precise UI, confirmation/replacement rules, and automatic
-policies will be designed later, as requested by the user.
+Optional normalization uses FFmpeg `libx264` AVC-Intra class 100 and verifies fixed access units before publication. Defaults are 1080p50, aspect-preserving scaling with padding, square pixels and 48 kHz audio. Preserve ordered channels without automatic downmixing. Unsupported HDR/color transformations and ambiguous mappings fail explicitly; supported interlaced SDR inputs are deinterlaced. Normalization is disabled by default.
 
-## Persistent jobs, retries, and duplicate inputs
+## Source-owned retention
 
-A local durable job database is proposed, with isolated source, artifact, stage,
-attempt, proxy, and per-destination records. SQLite is a reasonable initial option;
-implementation must make restart behavior explicit.
+There is **no 72-hour expiry or 02:00 purge timer**. EditShare owns the nightly archive action; Media Taxi follows actual folder membership.
 
-- Do not use filename alone as a completed-job identity. Record stable source
-  identity/fingerprint, content hashes where appropriate, and a separate job ID.
-- Repeated filesystem notifications must not duplicate active processing.
-- The same file submitted again should be recognized and support retrying missing
-  stages/destinations without repeating successful work.
-- Different content under the same filename needs an explicit version/replacement
-  policy. Do not silently overwrite production or archived media.
-- Keep a canonical clip cache and archive references for future recovery/re-sync.
-- Recover after interruption during copy, transcode, wrapping, delivery, archival,
-  and proxy generation. Resume at safe stage boundaries; restart incomplete encoder
-  work when it cannot safely resume, and clean/reconcile abandoned partial files.
-- Persist retry attempts/backoff and protect jobs against simultaneous claims.
-- Handle full disks, permissions, disconnected shares, read-only sources, source
-  changes, corrupt media, and application shutdown with clear states.
-- A destination failure must not lose the source or artifact and must not prevent
-  other destinations/jobs from progressing.
+| Source location | Behavior |
+|---|---|
+| Watch | Waiting, processing or visibly unresolved |
+| Finished | Retain local clip, proxy and current destination availability |
+| Failed | Retain failed entry while source exists |
+| Absent from all three | Retire after two successful complete scans separated by the reconciliation interval |
 
-## Concurrency and performance
+Source roots are scanned at the top level. Finished/Failed may be separate children of Watch and are excluded from incoming discovery. Temporary names and reparse points are excluded. A disconnected root, failed enumeration or unknown storage state pauses absence confirmation and cleanup; it never means an empty folder.
 
-Configure native rewrap, input normalization, proxy encoding, and delivery capacity
-independently. Bound child-process counts and FFmpeg thread usage. Keep the service
-and dashboard responsive under load, and give native ingest priority over proxies.
+Confirmed removal cancels active conversion/proxy work, closes owned handles, removes owned local `.clip`, MP4 and temporary artifacts, and drops the detail row. It never deletes completed Tria files or archived sources. Ownership and source generations protect today's same-named output from yesterday's delayed cleanup. Locked artifacts appear as Cleanup pending in `/admin` and are revisited during housekeeping. Startup observations do not confer ownership of unknown local artifacts.
 
-The performance goal is native-import-class speed for compatible media. The
-conversion path should preserve compressed video, avoid unnecessary full decoding,
-minimize intermediate copies, and verify/hash while streaming where practical.
-The research scripts deliberately perform extra passes for proof and are not the
-final high-throughput implementation.
+## Dashboard and OGP availability
 
-The tested format is roughly 1.8 GB per minute including native audio. Four full
-destination copies create roughly 7.2 GB of outgoing data for that minute of media.
-Measure rewrap time separately from network delivery and proxy time; throughput
-depends on storage/network bandwidth and configured parallelism. Benchmark against
-the actual Tria Importer and representative production media rather than promise
-an unmeasured speed.
+`/` has Active and Older tabs, newest arrival first. Arrival time is immutable; inventory updates do not reorder rows.
 
-## Investigation summary and reusable evidence
+- **Active:** managed arrivals from the last hour plus unresolved Watch sources regardless of age.
+- **Older:** older Finished/Failed entries and startup observations, retained while their sources exist.
 
-The format is a proprietary container around standard AVC-Intra video and PCM
-audio. The tested flat layout has a 32 KiB XML header, fixed-size video records,
-and eight AUK audio channels. Renaming an MXF is insufficient; correct wrapping is
-required. An independent writer works without Ross DLLs or the Oak codec card.
+Rows show arrival time, clip name, source format, processing stage/progress, proxy status and one column per configured destination. Stages include waiting for copy, pending, probing, native rewrap, transcoding, delivery, archiving and proxy generation. Completion is green when all destinations succeeded, yellow for partial delivery and failed when none succeeded. Local processing/archive/proxy can still succeed in the all-failed case. Format mismatch and other errors retain their source location and explanation.
 
-Evidence already established:
+Availability is separate from historical copy outcomes:
 
-- Two original native sample clips were extracted and converted to complete MP4s.
-- Newly generated synthetic video/audio was placed in `.clip` containers accepted
-  by Ross's supplied reader.
-- Synthetic AVC-Intra MXF essence could be extracted and wrapped without video
-  re-encoding or header repair.
-- Six real Premiere/Media Encoder production MXFs were rewrapped with exact video,
-  exact normalized audio, preserved channel order/start timecodes, and unique UUIDs.
-- Independent decoding read every output video frame, and Ross ClipLib read every
-  video/audio unit and confirmed duration/timecode/profile.
-- On **2026-11-25**, the user confirmed those production `.clip` files **work perfectly
-  on Tria after being copied directly into its media folder**. Hardware acceptance
-  for this native profile is therefore confirmed by the user.
-- The supplied `clip2mp4.exe` worked offline but produced one fewer decodable video
-  frame and only six audio channels in our tests. The independent FFmpeg proxy
-  route preserved every frame and expected decoded audio duration.
+| Availability | Meaning |
+|---|---|
+| OK | Name present in fresh complete inventory |
+| Missing | Absent and never observed online for this job |
+| Removed | Previously online, now absent from fresh complete inventory |
+| Unknown | Inventory unavailable, incomplete or stale |
 
-The detailed reference material remains in the local workspace, outside this GitHub
-repository. Paths below are local context references, not downloadable repository links:
+Removed is expected after operators clear Tria. Manual copying can make the status OK again; Media Taxi sends no media in response. Protected banners/openers and unrelated server files are never modified or deleted.
 
-- Detailed format/provenance notes: `../rules/tria-clip-investigation.md`.
-- Independent flat writer: `../AMP Controller/scripts/abekas-create-clip.py`.
-- Independent inspector/extractor/proxy converter: `../AMP Controller/scripts/abekas-clip.py`.
-- Native-library writer proof: `../AMP Controller/scripts/create-tria-clip.ps1`.
-- Production validation: the `REWRAP_RESULTS` files under the sibling controller's
-  `Documents/Tria Abekas example and app/media example/real mxf from production/`.
-- Research reports: `../AMP Controller/Documents/clip-research/`.
-- Ignored production helpers/logs: `../AMP Controller/.tools/clip-production/`.
+The independent OGP client ports the existing tested AMP Controller handshake, netstring framing, compressed JSON, complete `explorer.raw_clip_list` parsing, reconnect and stale-data rules. Requests are read-only inventory operations. Configure the logical inventory folder to match the destination. Existing Finished files discovered at startup are compared by name only: no rewrap, resend, overwrite or historical import statistics.
 
-These are research tools and evidence, not a packaged Media Taxi service. Additional
-.clip generations, codecs, frame rates, sparse/virtual/growing layouts, and arbitrary
-new encoder output are outside the demonstrated scope until specifically qualified.
-Some historical reports say hardware testing was pending; that describes the date
-they were written and is superseded by the user's confirmation above.
+`/admin` shows version/uptime, processing readiness, folder/share access and free space, FFmpeg/ffprobe versions and encoder capabilities, OGP readiness/freshness/errors, queues and workers, cleanup-pending items, system errors and rolling statistics. An offline destination or OGP connection does not stop attempts to other destinations. Missing required source/local-output folders or media tools pause new processing.
 
-## Suggested implementation milestones
+## Read-only HTTP interfaces
 
-1. Preserve this specification and proven format/OGP context; hardware acceptance of
-   native production rewrap is already reported as passed.
-2. Isolate/harden the native muxer, input probing, configuration, readiness, persistent
-   jobs, delivery, and archive behavior with representative fixtures.
-3. Add the minimal dashboard, destination status, recovery/retry, and OGP inventory.
-4. Add queued proxies and the explicit Octopus URL/MOS integration contract.
-5. Add optional incompatible-input normalization, concurrency/resource controls,
-   compatibility qualification, and realistic throughput measurements.
-6. Design and implement operator retry/re-sync actions and any explicit automatic
-   healing policies. The data model should already support these operations.
+| Path | Response |
+|---|---|
+| `/` | Activity dashboard |
+| `/admin` | System dashboard |
+| `/api/jobs?view=active` or `view=older` | Current job snapshot |
+| `/api/events` | SSE revision notifications and heartbeat; reconnect reloads a snapshot |
+| `/api/system` | Folders, workers, media tools, servers, errors and readiness |
+| `/api/statistics` | Rolling 24-hour counters |
+| `/health/live` | Process is serving HTTP |
+| `/health/ready` | 200 when processing prerequisites are healthy, otherwise 503 |
 
-The exact runtime/framework packaging is still to be selected. No service
-installation, build commands, production connections, or dashboard deployment are
-provided by this documentation-only 0.1.0 baseline.
+Proxies are **folder-only**. MP4 serving, Octopus registration, MOS messages, configuration editing and operational command endpoints are outside this release.
 
-## Development and prompt history
+## Configuration reference
 
-Keep modules small, cohesive, and isolated. Follow the shared rules and maintain
-this README as both the system description and primary versioned changelog.
-Every delivered code change must bump `VERSION` and any future package/project
-version metadata, update relevant docs, and add a changelog entry below. Do not
-create a separate changelog file.
+`media-taxi.example.ini` is the complete commented template. Copy to `media-taxi.ini`; use `--config PATH` for another location. All relative paths resolve against the INI directory. Booleans are `true`/`false`. Local output roots must not overlap one another, destinations or source roots.
 
-Every human-authored user prompt must be saved as its own text-only `.txt` file in
-the local workspace's shared `../prompt history/` folder, excluding
-attachments, automatic context, assistant output, and tool/reasoning content.
-Prompt archives and local agent/rule documents are not published to GitHub.
+| Section / keys | Valid values, units and defaults |
+|---|---|
+| `folders`: `watch`, `finished`, `failed` | Required existing distinct source roots. Finished/Failed may be children of Watch, not ancestors of it or each other. |
+| `folders`: `abekas`, `proxy`, `work` | Required separate output/work roots. Canonical `.clip` files live in Abekas until source removal. |
+| `folders`: `state` | Local SQLite and single-instance lock directory; not a network share. |
+| `destinations:ID`: `enabled`, `name`, `path`, `host`, `port`, `inventory_folder` | One to four enabled destinations. IDs: letters/digits/dash/underscore. Display name, share and Tria OGP host. Port 1..65535, default 5254; folder default `IMPORTS`. |
+| `workers`: `native`, `normalize`, `proxy`, `copy` | Independent limits 1..64; defaults **2, 1, 1, 4**. |
+| `workers`: `copies_per_destination` | 1..64, default **1**; keep 1 for initial qualification. |
+| `media`: `ffmpeg`, `ffprobe` | Defaults `tools/ffmpeg.exe`, `tools/ffprobe.exe`; qualified executable paths. |
+| `media`: `allow_normalization` | Default **false**. True permits supported incompatible inputs. Target fixed to qualified native format in 0.2.0. |
+| `media`: `threads`, `timeout_seconds` | Encoder threads 1..256, default **4**. Process timeout 10..86400 seconds, default **3600**. |
+| `timing`: `stability_seconds`, `reconcile_seconds` | 0.1..86400 seconds; defaults **10**, **10**. Deny-write protection supplements size/mtime checks. |
+| `timing`: `inventory_poll_seconds`, `inventory_timeout_seconds`, `reconnect_seconds` | 0.1..86400 seconds; defaults **30**, **5**, **5**. |
+| `proxy`: `codec` | **h264** or `h265`; qualify H.265 in the external preview player. |
+| `proxy`: `width`, `height`, `fps` | Even width 2..3840 and height 2..2160; fps 1..50. Defaults **640×360, 50**. |
+| `proxy`: `rate_control`, `video_bitrate`, `crf` | `bitrate` (default) or `crf`. Default **1200k** bits/sec or CRF **26** (0..51). Positive bitrates allow `k`/`M` suffixes. |
+| `proxy`: `preset` | ultrafast, superfast, veryfast, faster, **fast**, medium, slow, slower, veryslow. |
+| `proxy`: `audio_bitrate`, `channels` | AAC **128k**. One or two distinct one-based indexes 1..8, default **1,2**; no automatic downmix. |
+| `web`: `listen`, `time_zone` | HTTP address/port, no subpath; default **http://0.0.0.0:8080**. Time zone **Asia/Jerusalem**. |
+| `logging`: `level` | Trace, Debug, **Information**, Warning, Error, Critical or None; console output. |
+
+`--validate-config` checks syntax, ranges and folder relationships, not credentials or live access. `/admin` provides live checks. UNC shares use the console account's credentials; mapped drives depend on its session.
+
+## Recovery and statistics
+
+SQLite stores source generations, immutable arrivals, stages, artifact ownership/hashes, copy outcomes, inventory observations and anonymous events. It is restart state, not a long-term catalogue. Keep it with its corresponding configured folders.
+
+Startup reconciles sources before resuming interrupted work. Reuse completed verified artifacts and successful stages. Reconcile interrupted publication before repeating it; never repeat a completed failed destination attempt. Incomplete job-owned work can be rebuilt. Removed sources do not resume publication. Once processing begins, a changed source fingerprint is a different generation.
+
+Slow destination-health probes do not block new source discovery, and unavailable shares do not spawn endless overlapping probes. Housekeeping revisits pending artifact deletion and unresolved source movement; it does not repeat encoding/delivery for terminal failures.
+
+Rolling 24-hour events contain no filenames and survive detail cleanup:
+
+- **Processed / native / transcoded:** first successful local wrapping per job.
+- **Imported / native / transcoded:** first successful Media Taxi destination delivery. Four successful destinations still count as one import.
+- **Processing failures:** terminal processing errors, including proxy failure after archive.
+- **Delivery failures:** all initial destination attempts failed.
+- **Proxy completions:** first successful proxy per job.
+
+Events expire after 24 hours independently of folder cleanup. Startup observations and manual copies do not invent import events. Per-destination dashboard outcomes still show partial failures.
+
+## Build, tests and packaging
+
+Stack: .NET 10 Generic Host, ASP.NET Core/Kestrel, Microsoft.Data.Sqlite, external FFmpeg/ffprobe, plain HTML/CSS/JavaScript and SSE. Responsibilities are isolated:
+
+| Source directory | Responsibility |
+|---|---|
+| `Configuration`, `Domain` | INI validation, job state and read-only view contracts |
+| `Storage` | SQLite, complete source snapshots and verified file operations |
+| `Media` | Bounded child processes, probing, normalization, writer/reader and proxies |
+| `Engine` | Stage orchestration, workers, recovery and lifecycle ownership |
+| `Inventory` | OGP protocol and complete inventory state |
+| `Web`, `wwwroot` | Read-only endpoints, SSE and dashboards |
+| `tests/MediaTaxi.Tests` | xUnit unit, filesystem, process, HTTP and media integration tests |
+
+Use the SDK pinned in `global.json`:
+
+```powershell
+dotnet restore MediaTaxi.sln
+dotnet build MediaTaxi.sln -c Release --no-restore
+$env:MEDIATAXI_FFMPEG = 'C:\Tools\ffmpeg.exe'
+$env:MEDIATAXI_FFPROBE = 'C:\Tools\ffprobe.exe'
+dotnet test MediaTaxi.sln -c Release --no-restore
+```
+
+Real-media cases require these environment variables and are skipped without them. Production media is absent from Git; `MEDIATAXI_PRODUCTION_MEDIA` optionally points to local fixtures for parity qualification. Synthetic tests verify native wrapping/extraction, exact PCM/channel packing, timecode, duration/final frame, normalization, H.264/H.265 MP4s and ownership tags. Filesystem/protocol tests cover growing copies, duplicates, conflicts, source moves, all/partial/no delivery, storage outages, cancellation, locked cleanup, safe name reuse, restart, OGP framing/staleness and HTTP/SSE. A 50-file burst and simulated 500-clip day exercise the real engine, SQLite and filesystem with fake media processing; these prove orchestration correctness, not encoder/network throughput.
+
+```powershell
+.\scripts\Publish.ps1 -MediaToolsDirectory 'C:\Tools\QualifiedFFmpeg'
+```
+
+Publish uses `.tools/dotnet` when present, otherwise `dotnet` from PATH. It creates a self-contained `win-x64` folder with native SQLite, assets, README, VERSION and INI, plus an optional FFmpeg pair. Default output is `artifacts/MediaTaxi-0.2.0-win-x64` and `.zip`; existing output is not overwritten. Redistributed media tools retain their supplied licenses/notices. The published console needs no installed .NET runtime; FFmpeg remains a child executable dependency.
+
+AMP Controller remains a separate read-only reference project. Media Taxi has no sibling-source runtime dependency. Agent/rule files, prompt archives, vendor research, production media, local configuration, runtime state and artifacts stay excluded from Git. Synchronize version metadata and this README for each delivered version; keep the changelog here.
 
 ## Changelog
 
+### 0.2.0 — 2026-11-25
+
+- Implemented the Windows console, commented INI, self-contained packaging, activity/system dashboards, SSE and read-only health APIs.
+- Ported the flat Abekas AVC-Intra100/1080p50 writer/reader to C#, with strict access-unit checks, AUK packing, timecode, optional normalization and configurable MP4 proxies.
+- Added stable-file discovery, independent verified no-overwrite delivery, Finished/Failed routing, SQLite recovery and source-owned retention/cancellation/cleanup.
+- Added OGP inventory with OK/Missing/Removed/Unknown, startup archive observations and anonymous rolling statistics.
+- Added format, filesystem, process, HTTP, inventory, recovery and simulated broadcast-load tests. Six production fixtures passed C# parity and Ross reader checks; operator Tria acceptance remains required for the new writer and normalization.
+
 ### 0.1.0 — 2026-11-25
 
-- Created the independent Media Taxi project and preserved the user's complete
-  watchfolder, rewrap/optional-transcode, four-destination, archive, proxy, commented
-  config, dashboard, concurrency, recovery, inventory, and future re-sync requirements.
-- Recorded native flat AVC-Intra100/1080p50 proof, six production conversions, and
-  the user's successful direct-copy Tria playback confirmation.
-- Linked the existing format prototypes, production evidence, and OGP implementation.
-- Added shared/app-specific instructions, a specification version file, and local
-  artifact ignores in the local workspace; agent/rule/research files are excluded
-  from the published repository.
-- Prepared the independent `media-taxi` repository for initial publication with
-  README and repository/version metadata only. Kept AMP Controller read-only and
-  left characterization gaps and technology-stack selection explicitly open.
-- Runtime/service implementation has not started.
+- Created the independent public project and preserved ingest, normalization, delivery, archive, proxy, dashboard, configuration and recovery requirements.
+- Recorded the native-format investigation, six production conversions and successful operator Tria playback of the original writer's output.
+- Kept AMP Controller separate and research/prompt archives local. This was a documentation baseline; runtime implementation began in 0.2.0.

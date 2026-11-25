@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Media Taxi · System</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script type="module" src="/system.js"></script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="brand"><span class="brand-mark" aria-hidden="true">MT</span><div><h1>Media Taxi</h1><p>Broadcast ingest &amp; delivery</p></div></div>
+    <nav aria-label="Main navigation"><a href="/">Activity</a><a class="selected" href="/admin" aria-current="page">System</a></nav>
+    <div class="connection" id="connection" role="status"><span class="dot"></span><span>Connecting</span></div>
+  </header>
+  <main>
+    <div class="system-heading"><div><h2>System status</h2><p id="system-meta">Loading application health…</p></div><span class="badge" id="ready-badge">Checking</span></div>
+    <section class="metric-grid" id="statistics" aria-label="Rolling 24-hour statistics"></section>
+    <div class="notice hidden" id="processing-notice" role="status"></div>
+    <section class="panel">
+      <div class="section-heading"><h3>Tria connections</h3><span id="updated">Waiting for data</span></div>
+      <div class="table-wrap"><table><thead><tr><th scope="col">Server</th><th scope="col">OGP socket</th><th scope="col">Inventory</th><th scope="col">Last complete inventory</th><th scope="col">Error</th></tr></thead><tbody id="server-body"></tbody></table></div>
+    </section>
+    <section class="panel">
+      <div class="section-heading"><h3>Folder access</h3><span>Read/write checks use app-owned temporary files</span></div>
+      <div class="table-wrap"><table><thead><tr><th scope="col">Folder</th><th scope="col">Path</th><th scope="col">Read</th><th scope="col">Write</th><th scope="col">Available space</th><th scope="col">Error</th></tr></thead><tbody id="folder-body"></tbody></table></div>
+    </section>
+    <div class="system-grid">
+      <section class="panel"><div class="section-heading"><h3>Media tools</h3><span class="badge" id="media-ready">Checking</span></div><dl class="tool-details" id="media-details"></dl></section>
+      <section class="panel"><div class="section-heading"><h3>Workers</h3><span id="queue-count">0 queued</span></div><div class="worker-grid" id="workers"></div><div class="section-heading"><h3>Current stages</h3></div><div class="worker-grid" id="stages" role="status"></div></section>
+    </div>
+    <div class="system-grid">
+      <section class="panel"><div class="section-heading"><h3>Cleanup pending</h3></div><ul class="message-list" id="cleanup-list"></ul></section>
+      <section class="panel"><div class="section-heading"><h3>Current errors</h3></div><ul class="message-list" id="error-list"></ul></section>
+    </div>
+    <div class="error-message hidden" id="page-error" role="alert"></div>
+    <p class="muted">System status is read-only. Edit the local INI and restart Media Taxi to change settings.</p>
+  </main>
+</body>
+</html>
