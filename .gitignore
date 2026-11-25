@@ -1,0 +1,44 @@
+# Generated dependencies, work files, and local runtime state
+.tools/
+.venv/
+__pycache__/
+*.pyc
+node_modules/
+dist/
+build/
+release/
+coverage/
+data/
+work/
+cache/
+logs/
+*.log
+*.db
+*.db-shm
+*.db-wal
+.env
+config.local.ini
+config.local.xml
+
+# Production/research media and copied vendor binaries stay outside source control
+*.mxf
+*.clip
+*.mp4
+*.mov
+*.wav
+
+# Local operating-system files
+.DS_Store
+Thumbs.db
+
+# Local-only agent guidance, shared rules, research documents, and prompt archives
+AGENTS*.md
+.agents/
+.codex/
+rules/
+docs/
+Documents/
+documents/
+research/
+prompt history/
+*.eml
