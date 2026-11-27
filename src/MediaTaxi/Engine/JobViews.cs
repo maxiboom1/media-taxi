@@ -36,7 +36,7 @@ public sealed partial class JobEngine
             var stages = jobs.Values.Where(j => j.Managed && !j.Retiring && j.Stage is not (JobStage.Done or JobStage.Existing or JobStage.Failed))
                 .GroupBy(j => j.Stage).OrderBy(group => group.Key).ToDictionary(group => group.Key.ToString(), group => group.Count());
             long free = 0; try { free = cache.FreeBytes; } catch (IOException) { }
-            return new("0.3.0", (DateTimeOffset.UtcNow - started).TotalSeconds, processingReady, pause, folders, mediaHealth, servers,
+            return new("0.3.1", (DateTimeOffset.UtcNow - started).TotalSeconds, processingReady, pause, folders, mediaHealth, servers,
                 new Dictionary<string, int>(activeWorkers), jobs.Values.Count(j => !j.Retiring && j.Managed && j.Stage is JobStage.Waiting or JobStage.Queued), cleanup, errors, stages,
                 new(options.Folders.Work, jobs.Values.Sum(cache.Usage), jobs.Values.Sum(j => j.CacheReservationBytes), options.Cache.MaxBytes, free, options.Cache.MinFreeBytes));
         }

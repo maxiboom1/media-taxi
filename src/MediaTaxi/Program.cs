@@ -7,7 +7,7 @@ using MediaTaxi.Storage;
 using MediaTaxi.Web;
 using System.Text.Json.Serialization;
 
-if (args.Contains("--version")) { Console.WriteLine("Media Taxi 0.3.0"); return; }
+if (args.Contains("--version")) { Console.WriteLine("Media Taxi 0.3.1"); return; }
 var configIndex = Array.IndexOf(args, "--config");
 if (configIndex >= 0 && (configIndex + 1 >= args.Length || args[configIndex + 1].StartsWith("--", StringComparison.Ordinal)))
 { Console.Error.WriteLine("Configuration error: --config requires a path."); Environment.ExitCode = 2; return; }
@@ -25,7 +25,7 @@ builder.Logging.AddFilter("Microsoft.AspNetCore", LogLevel.Warning);
 builder.Services.Configure<Microsoft.Extensions.Hosting.HostOptions>(o => o.ShutdownTimeout = TimeSpan.FromSeconds(15));
 builder.Services.ConfigureHttpJsonOptions(o => o.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 builder.Services.AddSingleton(options);
-builder.Services.AddSingleton(_ => new JobStore(options.Folders.State, options.ConfigPath));
+builder.Services.AddSingleton(_ => new JobStore(options.Folders.State));
 builder.Services.AddSingleton<IMediaService, MediaService>();
 builder.Services.AddSingleton<InventoryService>();
 builder.Services.AddHostedService(p => p.GetRequiredService<InventoryService>());
@@ -34,7 +34,7 @@ builder.Services.AddSingleton<IApplicationView>(p => p.GetRequiredService<JobEng
 builder.Services.AddHostedService(p => p.GetRequiredService<JobEngine>());
 await using var app = builder.Build();
 DashboardEndpoints.Map(app, app.Services.GetRequiredService<IApplicationView>());
-app.Logger.LogInformation("Media Taxi 0.3.0 | Config: {Config} | Dashboard: {Listen}", options.ConfigPath, options.Web.Listen);
+app.Logger.LogInformation("Media Taxi 0.3.1 | Config: {Config} | Dashboard: {Listen}", options.ConfigPath, options.Web.Listen);
 await app.RunAsync();
 
 public partial class Program;

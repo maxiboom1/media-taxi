@@ -1,6 +1,6 @@
 # Media Taxi
 
-**0.3.0 · Windows x64 broadcast ingest · 2026-11-27**
+**0.3.1 · Windows x64 broadcast ingest · 2026-11-27**
 
 Media Taxi watches incoming media, creates Ross Tria/Abekas `.clip` files, attempts delivery to one to four servers, moves processed originals to Finished, and creates MP4 newsroom proxies. It runs as a console application with a commented INI file and read-only web dashboards. AMP Controller, Python and Ross DLLs are not runtime dependencies.
 
@@ -8,7 +8,7 @@ The original investigation writer produced clips from six real production MXFs. 
 
 ## Quick start
 
-1. Extract the self-contained Windows ZIP to a local folder on the RAID/10 GbE host.
+1. Use the stable development deployment at `artifacts/media-taxi-current/`, or extract the Windows ZIP into a stable local folder on the RAID/10 GbE host.
 2. Edit `media-taxi.ini` beside `MediaTaxi.exe`: source/output folders, destination shares, Tria addresses and dashboard bind address. Relative paths resolve against the INI directory.
 3. Create the configured folders. Give the console account read/write/delete access to sources and local work/output folders, and create/write access to destination shares. Keep SQLite state local. If FFmpeg is absent from your package, put qualified `ffmpeg.exe` and `ffprobe.exe` at the configured paths.
 4. Validate configuration and start:
@@ -33,12 +33,12 @@ The example INI uses local demonstration folders and documentation-only server a
 4. Copy compatible native compressed video without re-encoding. If enabled, normalize a supported incompatible source to the qualified target first; otherwise route it to Failed with Format mismatch.
 5. Reserve bounded temporary cache capacity on C: and write one job-owned delivery `.clip`. Native compressed video streams directly into validated records; only PCM is spooled to WAV. No native intermediate H.264 file is created.
 6. Move the successfully wrapped source to Finished. A failed source move must be resolved before either output branch starts.
-7. Queue independent destination deliveries. Attempt each destination once, with global and per-destination limits. Validate local bytes while writing, flush, compare the remote byte length through filesystem metadata and publish the final name atomically. Never read remote video/audio or headers back for verification. A fresh attempt never overwrites or adopts an existing file; a persisted interrupted publication can reconcile an existing final of the expected byte length.
+7. Queue independent destination deliveries. Attempt each destination once, with global and per-destination limits. Overlap local reads and the required SHA-256 checks with ordered network writes through three 1 MiB buffers; hash each payload byte once, flush, compare the remote byte length through filesystem metadata and publish the final name atomically. Never read remote video/audio or headers back for verification. A fresh attempt never overwrites or adopts an existing file; a persisted interrupted publication can reconcile an existing final of the expected byte length.
 8. Delete each delivery clip after its own destination attempts finish, including partial/all-copy failure. OGP confirmation and other jobs do not hold its cache. Generate `<clip-name>.mp4` from its Finished source through a separate queue. A running proxy finishes normally; by default no additional proxies start while high-resolution jobs wait for stability, cache, processing, archival or delivery. Source-absent jobs, terminal failures and OGP waits do not block proxy admission.
 
 New files join the native/normalization pipeline without waiting for earlier proxies or server copies. FIFO admission follows readiness for each stage, allowing a later native file to overtake a slow normalization. Proxy admission and worker assignment use the same lock as incoming registration. Native workers default to **1**, normalization to **1**, proxies to **1**, global copies to **4**, and copies per destination to **1**. A burst may finish all high-resolution deliveries while proxies remain queued. Proxy progress is separate from high-resolution progress; Probing means a worker is actually inspecting the source, while sources waiting for that worker show Pending.
 
-Each job API includes persisted `timings`: `probe`, `wrap` (combined native streaming/audio packing or normalization/wrapping), legacy `prepare`, `archive`, `delivery:ID`, `copy-write:ID`, `copy-publish:ID` and `proxy`, with UTC start/end and measured seconds. Queue/readiness waiting is separate from active phase time. Delivery time includes the remote write, flush and publication, with no media readback. Timing metadata follows the job's source-owned lifetime.
+Each job API includes persisted `timings`: `probe`, `wrap` (combined native streaming/audio packing or normalization/wrapping), `archive`, `delivery:ID`, `copy-write:ID`, `copy-publish:ID` and `proxy`, with UTC start/end and measured seconds. Queue/readiness waiting is separate from active phase time. Delivery time includes the remote write, flush and publication, with no media readback. Timing metadata follows the job's source-owned lifetime.
 
 After publication, request a fresh read-only OGP inventory without holding the copy slot. A completed row shows Copied; awaiting Tria until fresh OGP presence is confirmed, then green **OK**. OGP presence is the operator's acceptance criterion; no duration warning/status is shown. No SMB header read, full-file checksum readback or AMP fallback is performed. Availability remains separate from historical processing outcome.
 
@@ -180,42 +180,24 @@ API additions retain existing fields: jobs include hiresPhase, cacheWaitReason, 
 
 C: and D: are separate virtual disks on the PERC controller; their physical drive groups are not established. Performance benefit must be measured on this host. Moving temporary writes off D: and deferring new proxies reduce contention without assuming a guaranteed speed multiplier.
 
-## Measured broadcast test — 2026-11-27
+## Delivery investigation — 2026-11-27
 
-Six real production MXFs (5.92, 30, 32.92, 36.04, 46.12 and 59.1 seconds) were ingested using D: media/work paths, one native worker, one proxy worker and one copy per destination. All six local clips, archived originals, server publications, OGP confirmations and proxies succeeded with no failures. All six native wraps completed **18.96 seconds before the first proxy finished**; the proxy queue reached five entries. No remote media/header checksum readback was performed. OGP presence is the green OK criterion.
+A current-format 59.1-second clip is **1,779,273,728 bytes**. A 335 MB/s full-file transfer would take about 5.3 seconds, before additional work. The original delivery loop did a local read, redundant whole-file plus payload hashing, and one awaited network write in sequence for every MiB.
 
-For the 59.1-second clip in that busy six-file run:
+Scratch-file transfers used the same source and Tria share, without wrapping/proxy activity during timing or historical-version binaries:
 
-| Phase | Seconds |
-|---|---:|
-| Probe | 0.45 |
-| Native essence preparation | 2.83 |
-| Native container writing | 7.62 |
-| Probe + preparation + wrapping | **10.90** |
-| Destination write/flush/publication | **58.97** |
-| First observed arrival to publication, including receipt/readiness | **86.79** |
-| First observed arrival to fresh OGP confirmation | **about 95.1** |
-
-Proxy completion is excluded from those high-resolution times. The whole six-file test including all proxies took about 146 seconds from the first copy start. An isolated SMB write test reached about 250 MB/s; the first large write under concurrent ingest/proxy/storage load was substantially slower. A negotiated 10 Gb/s link does not establish sustained file-transfer speed. This run confirms pipeline independence; it does not demonstrate Tria Importer speed parity or isolate D: performance from the simultaneous delivery-validation change. A later controlled single-file, equal-validation comparison can isolate storage/network effects without a large burst.
-
-## 0.3.0 qualification — 2026-11-27
-
-Six unique live publications succeeded: one matched 0.2.1 baseline, the same 59.1-second production source on 0.3.0, and four shorter native sources on 0.3.0. Inputs were pre-staged before timed appearance; both versions retained 10-second stability/reconciliation settings and the same destination, one native worker and one copy per destination. No playback commands or remote media/header reads were used.
-
-| Matched 59.1-second source | 0.2.1 | 0.3.0 |
+| Copy method | Total time | Average throughput |
 |---|---:|---:|
-| Probe + native preparation/wrapping | 20.22 s | **9.66 s** |
-| Destination copy/flush/publication | 22.90 s | **19.08 s** |
-| First detection to publication (includes readiness; excludes proxy) | 53.23 s | **39.19 s** |
-| First detection to fresh OGP confirmation | 55.24 s | **48.95 s** |
+| Original serialized loop with duplicate digest work | 18.13 s | 98 MB/s |
+| Serialized loop calculating only the required digests | 12.32 s | 144 MB/s |
+| Bounded overlapping pipeline, required digests retained | **6.70 s** | **266 MB/s** |
+| Shipping pipeline verification repeat | **6.80 s** | **262 MB/s** |
 
-That is 52% less active native-processing time and 26% less detection-to-publication time in this matched sample. OGP indexing/inventory delay varied between trials; green status is still fresh presence. Copying remains the largest active phase. These are single pre-staged trials with normal OS/controller caching and host activity, not cold-cache or sustained RAID/network benchmarks, guaranteed speedups, or Tria Importer parity claims.
+An instrumented serialized copy spent 1.12 s reading, 9.65 s hashing, 6.73 s awaiting writes and 0.004 s flushing. Single-digest hashing took 4.86 s. The pipeline overlaps those stages and holds at most 3 MiB per active destination copy. Full-file hashing is used for a current restart checkpoint without split digests; it is never also calculated alongside the split payload digest. Cancellation/read/write/hash failure stops both pipeline workers, retains no final filename and follows the existing single-attempt policy. No destination media/header is read back.
 
-In the four-file burst (5.92, 30, 46.12 and 32.92 seconds), wrapping overlapped delivery, copies stayed serialized to TLV1, and every delivery finished before any proxy started (0.38-second admission gap). All five 0.3.0 clips and proxies succeeded with fresh green OGP availability. Reported burst cache usage peaked at about 2.39 GiB with 3.23 GiB reserved; final usage and reservations were both zero. Each clip was released after its own copies, while other clips were still wrapping/copying. Cache accounting conservatively uses reservations when a transient ownership/metadata read is unavailable.
+Removing write-through and keeping a final flush measured 6.78 s versus 6.80 s with write-through, so the shipping path retains write-through. An isolated Windows CopyFileEx copy completed in 2.38 s from C: and 3.96 s from D:, including its final flush, without application payload hashing. That is a transfer-engine reference with different verification, not equivalent verified-delivery timing. Later trials had warm OS/controller caches. Local C:/D: reads measured 505/426 MB/s without hashes; two SHA-256 passes reduced throughput to about 172/173 MB/s. These measurements identify redundant CPU work and serialized I/O as the practical bottleneck; they do not establish a fixed cold-disk speed or guaranteed sustained network rate.
 
-During the matched high-resolution windows, host-wide Windows logical D: disk-time counter averages fell from about 67% to 13%; average D: reads fell from 111 to 60 MB/s and writes from 107 MB/s to about 0.02 MB/s. Temporary writes moved to C:. These one-second logical-volume counters include host/cache activity and are not individual physical-drive utilization measurements. The data supports reduced D: contention on this host without establishing the physical PERC drive grouping.
-
-Automated qualification passed **105 tests**, with the opt-in production case skipped in the general run and separately passing all six fixtures: unchanged compressed-video hashes, exact ordered PCM, duration/start timecode/final frame, and Ross metadata/native-reader acceptance. Regression tests cover source-based H.264/H.265 proxies, normalized framing/silence, active inherited-handle move/delete, cache quota/cleanup, restarts, independent queues, 50-file bursts and a simulated 500-clip day. Hardware playout of the new streaming writer and normalization remains an operator acceptance step.
+Only uniquely owned remote `.partial` scratch files were created and removed. No completed Tria clips were modified, no playback command was sent and no older Taxi executable was used. Investigation source/cache files were removed afterward. Wrapping/proxy/inventory behavior remains independently tested.
 
 ## Build, tests and packaging
 
@@ -247,13 +229,24 @@ Real-media cases require these environment variables and are skipped without the
 .\scripts\Publish.ps1 -MediaToolsDirectory 'C:\Tools\QualifiedFFmpeg'
 ```
 
-Publish uses `.tools/dotnet` when present, otherwise `dotnet` from PATH. It creates a self-contained `win-x64` folder with native SQLite, assets, README, VERSION and INI, plus an optional FFmpeg pair. Default output is `artifacts/MediaTaxi-<VERSION>-win-x64` and `.zip`; existing output is not overwritten. Redistributed media tools retain their supplied licenses/notices. The published console needs no installed .NET runtime; FFmpeg remains a child executable dependency.
+Publish uses `.tools/dotnet` when present, otherwise `dotnet` from PATH. It stages a clean self-contained `win-x64` build under `.tools/publish-stage/`, then updates **`artifacts/media-taxi-current/`** in place. Its private INI and `runtime/state` remain at the same paths across iterations. Use **`state = runtime/state`**; qualified FFmpeg/ffprobe live in `tools/` beside the executable. Watch/Finished/Failed/proxy and the C: cache retain their configured real locations. Paths must never depend on another version's artifact folder.
 
-For upgrade, stop the previous console and retain its INI and SQLite state. Back up the original INI before editing it. Remove `folders.abekas`, set `folders.work = C:/MediaTaxiCache`, and add the cache and proxy-admission keys from the template. Keep the resolved state directory unchanged. On startup Media Taxi creates a consistent SQLite `pre-0.3.0.db` backup through SQLite's backup API and a `.pre-0.3.0.bak` INI copy once per state directory. A referenced, owned legacy clip can finish its existing attempts in place; completed legacy clips and specifically named legacy essence are removed through persisted ownership checks. No Abekas-directory sweep or old C: cleanup occurs. Untracked files and links are retained for review. Existing explicit worker settings remain authoritative: change `native = 2` to `native = 1` if desired. Relative paths change meaning if the INI is moved, so preserve their resolved locations. Completed 0.2.0 jobs remain completed; interrupted jobs keep their successful stages and completed failed destination attempts.
+The ZIP is always **`artifacts/media-taxi-current.zip`**, created from the clean staging tree with generic settings before private settings/runtime data are involved. It contains native SQLite, assets, README, VERSION, commented INI and the FFmpeg pair/licenses when supplied. The console requires no installed .NET runtime or Python. A program-file manifest allows removal of superseded owned binaries while preserving configuration/state. Publishing requires the console/state lock to be released. It validates the active INI, replaces the current ZIP, then removes all other generated children of this application's artifacts directory after absolute path/link checks. Current data/settings must be independent of those old directories first.
+
+Media Taxi is currently in **development**. Work and test the current version; do not build version-to-version compatibility/migration machinery or launch older Taxi versions for performance baselines unless explicitly requested. Current-version restart recovery, source ownership and user data/settings remain required. Automatic version-specific backups have been removed. Handle schema changes deliberately during development without promising support for older releases.
 
 AMP Controller remains a separate read-only reference project. Media Taxi has no sibling-source runtime dependency. Agent/rule files, prompt archives, vendor research, production media, local configuration, runtime state and artifacts stay excluded from Git. Synchronize version metadata and this README for each delivered version; keep the changelog here.
 
 ## Changelog
+
+### 0.3.1 — 2026-11-27
+
+- Remove redundant whole-file hashing when split header/payload verification is used; overlap local reads/integrity work with ordered writes using a bounded 3 MiB pipeline. Preserve final flush, no-overwrite publication, cancellation and one attempt per destination.
+- Investigate current delivery methods directly: the 1.78 GB production clip copied in 6.80 s through the shipping pipeline versus 18.13 s through the original serialized loop, without remote media reads.
+- Deploy to stable `artifacts/media-taxi-current/` with `state = runtime/state`; keep only this active build and `media-taxi-current.zip`, preserving private INI/current state while replacing program files.
+- Remove automatic version-specific backups; document development-only current-version work and add corruption, cancellation, bounded-buffer and destination-failure tests.
+- Validation: 111 unit/integration cases passed; the optional production-fixture test was skipped because this change does not alter wrapping. The shipping copy passed a real native-media/live-share check. Repeated in-place publication preserved INI/SQLite bytes and removed an obsolete manifest-owned program file.
+
 
 ### 0.3.0 — 2026-11-27
 
