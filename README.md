@@ -1,10 +1,10 @@
 # Media Taxi
 
-**0.3.1 · Windows x64 broadcast ingest · 2026-11-27**
+**0.4.0 · Windows x64 broadcast ingest · 2026-11-27**
 
 Media Taxi watches incoming media, creates Ross Tria/Abekas `.clip` files, attempts delivery to one to four servers, moves processed originals to Finished, and creates MP4 newsroom proxies. It runs as a console application with a commented INI file and read-only web dashboards. AMP Controller, Python and Ross DLLs are not runtime dependencies.
 
-The original investigation writer produced clips from six real production MXFs. The operator confirmed those clips played after direct copying to Tria's media folder. This release ports the format to C#. All six production fixtures also passed the C# parity checks and Ross reader validation. **The C# port and optional normalization still require an operator-controlled Tria playback check before unattended production use.**
+The original writer and the C# implementation passed offline production-fixture parity and Ross reader checks. The operator reported successful real production tests with one and two Tria servers, including a 51-clip batch. This is operator-reported acceptance of the tested native AVC-Intra100/1080p50 workflow, not an agent playout test or qualification of every normalization profile. Optional normalization still requires its own operator-controlled Tria acceptance.
 
 ## Quick start
 
@@ -89,7 +89,7 @@ Confirmed removal cancels active conversion/proxy work, closes owned handles, re
 - **Active:** managed arrivals from the last hour plus unresolved Watch sources regardless of age.
 - **Older:** older Finished/Failed entries and startup observations, retained while their sources exist.
 
-Rows show arrival time, clip name, source format, processing stage/progress, proxy status and one column per configured destination. Stages include waiting for copy, pending, probing, native rewrap, transcoding, delivery, archiving and proxy generation. Completion is green when all destinations succeeded, yellow for partial delivery and failed when none succeeded. Local processing/archive/proxy can still succeed in the all-failed case. Format mismatch and other errors retain their source location and explanation.
+Rows show arrival time, clip name, source format, processing stage/progress, proxy status and one column per configured destination. Search and 50-row pagination apply independently to Active and Older. Updates preserve row identity, keyboard focus and an open details dialog; continuous progress triggers at most two automatic snapshot refreshes per second. Select a clip name for read-only paths, waits, stage timings, destination results and diagnostics. Inline errors occupy at most two lines. Stages include waiting for copy, pending, probing, native rewrap, transcoding, delivery, archiving and proxy generation. Completion is green when all destinations succeeded, yellow for partial delivery and failed when none succeeded. Local processing/archive/proxy can still succeed in the all-failed case. Format mismatch and other errors retain their source location and explanation.
 
 Availability is separate from historical copy outcomes:
 
@@ -113,6 +113,7 @@ The independent OGP client ports the existing tested AMP Controller handshake, n
 | `/` | Activity dashboard |
 | `/admin` | System dashboard |
 | `/api/jobs?view=active` or `view=older` | Current job snapshot |
+| `/api/jobs/{id}` | Read-only source/stage/wait/timing/diagnostic details; 404 after retirement |
 | `/api/events` | SSE revision notifications and heartbeat; reconnect reloads a snapshot |
 | `/api/system` | Folders, workers, media tools, servers, errors and readiness |
 | `/api/statistics` | Rolling 24-hour counters |
@@ -146,9 +147,27 @@ Proxies are **folder-only**. MP4 serving, Octopus registration, MOS messages, co
 | `proxy`: `preset` | ultrafast, superfast, veryfast, faster, **fast**, medium, slow, slower, veryslow. |
 | `proxy`: `audio_bitrate`, `channels` | AAC **128k**. One or two distinct one-based indexes 1..8, default **1,2**; no automatic downmix. |
 | `web`: `listen`, `time_zone` | HTTP address/port, no subpath; default **http://0.0.0.0:8080**. Time zone **Asia/Jerusalem**. |
-| `logging`: `level` | Trace, Debug, **Information**, Warning, Error, Critical or None; console output. |
+| `timing`: `source_scan_timeout_seconds`, `health_check_timeout_seconds` | Integer 1..300 seconds; defaults **30**, **10**. Results are judged by actual completion time, not when polled. One outstanding OS operation per component. |
+| `timing`: `health_check_interval_seconds` | Integer 5..3600 seconds; default **60**. Write/delete probes run at startup and this interval, separate from read-only source enumeration. |
+| `timing`: `stalled_source_warning_seconds` | Integer 1..86400 seconds; default **300**. Warning only: no quarantine deadline, timed proxy override or resend. |
+| `logging`: `level` | Trace, Debug, **Information**, Warning, Error, Critical or None; applies to console and file output. |
+| `logging`: `file_enabled`, `directory`, `max_files`, `max_mib` | **true**, **runtime/logs**, **5** files (1..20), **10 MiB** per file (1..100). Relative to INI. Bounded asynchronous local logs; no external alerts. |
 
 `--validate-config` checks syntax, ranges and folder relationships, not credentials or live access. `/admin` provides live checks. UNC shares use the console account's credentials; mapped drives depend on its session.
+
+## Source waits, diagnostics and durability
+
+Sharing violations remain Waiting for copy with a producer-lock reason. Permission, storage and network access failures show Source blocked and the time waiting began. Ordinary reconciliation rechecks readiness; it does not repeat a completed conversion. After the configured stalled-source interval, the dashboard and /admin flag the wait. Native PCM matching remains exact: a mismatch reports expected samples, actual samples and the sample delta without padding/trimming native audio.
+
+Strict high-resolution priority remains enabled by default. A nonterminal Watch job waiting for stability, an unlock or cache space can defer new proxies indefinitely; the source blocker and wait age are visible. A finished destination failure (including an existing target name) is terminal, releases its delivery cache and does **not** block proxies. All-copy failure still leaves the source in Finished and generates its proxy. Rejected ingest sources get no proxy and do not block proxies for other jobs. No automatic resend, completed-copy retry, proxy retry or re-sync is added.
+
+Source enumeration is read-only. Separate write/delete probes expose their last check time; a not-yet-performed check is Unknown. A slow scan completed inside its deadline is accepted even when observed on a later poll. A timed-out or inaccessible scan cannot authorize cleanup, and a hung OS call is never replaced by more simultaneous calls. Retirement still requires two distinct successful absent scans separated by reconciliation timing.
+
+The engine lock protects memory only. Database checkpoints are immutable batches admitted to a bounded FIFO writer and committed on a dedicated thread outside that lock; processing awaits durable acknowledgment before the next external stage. Job/statistic events remain atomic and idempotent. Persistence failure pauses new processing/publication and appears in /admin/readiness. Views read cached disk/statistics snapshots, keeping HTTP/SSE responsive during storage delays. OGP names are normalized/indexed once per inventory list, not for every job. Statistics retention writes occur in housekeeping, never in HTTP GETs.
+
+FFmpeg progress records are excluded from diagnostic tails, including native binary streaming on stderr. Actual error records and other key=value messages remain. Summaries are limited to 1,024 characters, diagnostic tails to 64 KiB, with phase and exit code when available. Windows inherited-input children start suspended until the managed process handle is attached, preserving immediate-exit diagnostics. The handle allowlist, seeking and delete-sharing behavior are retained.
+
+File logging uses a bounded queue and rotation alongside console output; encoder progress is not logged per frame. A full queue or unavailable log directory does not stop ingest. /admin shows log errors/dropped messages, checkpoint health, scan freshness and source blockers. Keep logs local on C:, away from source/output media folders. Configuration rejects log directories overlapping source, proxy, cache or destination roots. Unknown files inside a cache job directory are retained as Cleanup pending; there is no legacy-directory sweep.
 
 ## Recovery and statistics
 
@@ -223,7 +242,7 @@ $env:MEDIATAXI_FFPROBE = 'C:\Tools\ffprobe.exe'
 dotnet test MediaTaxi.sln -c Release --no-restore
 ```
 
-Real-media cases require these environment variables and are skipped without them. Production media is absent from Git; `MEDIATAXI_PRODUCTION_MEDIA` optionally points to local fixtures for parity qualification. Synthetic tests verify native wrapping/extraction, exact PCM/channel packing, timecode, duration/final frame, normalization, H.264/H.265 MP4s and ownership tags. Filesystem/protocol tests cover growing copies, duplicates, conflicts, source moves, all/partial/no delivery, storage outages, cancellation, locked cleanup, safe name reuse, restart, OGP framing/staleness and HTTP/SSE. A 50-file burst and simulated 500-clip day exercise the real engine, SQLite and filesystem with fake media processing; these prove orchestration correctness, not encoder/network throughput.
+For release verification use `./scripts/Test.ps1`: it discovers `.tools/media` or accepts `-MediaToolsDirectory`, requires both tools, runs real codec tests, and executes `node scripts/TestDashboard.mjs`. Node is a development-test dependency only, never a runtime dependency. Direct `dotnet test` skips codec cases without the environment variables. Production media is absent from Git; `MEDIATAXI_PRODUCTION_MEDIA` optionally points to local fixtures for parity qualification. Synthetic tests verify native wrapping/extraction, exact PCM/channel packing, timecode, duration/final frame, normalization, H.264/H.265 MP4s and ownership tags. Filesystem/protocol tests cover growing copies, duplicates, conflicts, source moves, all/partial/no delivery, storage outages, cancellation, locked cleanup, safe name reuse, restart, OGP framing/staleness and HTTP/SSE. A 50-file burst and simulated 500-clip day exercise the real engine, SQLite and filesystem with fake media processing; these prove orchestration correctness, not encoder/network throughput.
 
 ```powershell
 .\scripts\Publish.ps1 -MediaToolsDirectory 'C:\Tools\QualifiedFFmpeg'
@@ -238,6 +257,18 @@ Media Taxi is currently in **development**. Work and test the current version; d
 AMP Controller remains a separate read-only reference project. Media Taxi has no sibling-source runtime dependency. Agent/rule files, prompt archives, vendor research, production media, local configuration, runtime state and artifacts stay excluded from Git. Synchronize version metadata and this README for each delivered version; keep the changelog here.
 
 ## Changelog
+
+### 0.4.0 — 2026-11-27
+
+- Separate read-only scans from periodic write/delete probes; accept slow scans within configurable deadlines, retain one outstanding OS call, and expose source blockers/wait ages without weakening strict hires priority.
+- Move SQLite writes and cache/filesystem inspection outside the dashboard lock; add ordered bounded durable checkpoints, cached health/statistics, indexed OGP matching and read-only statistics GETs.
+- Filter FFmpeg progress out of bounded diagnostics, retain immediate Windows child-exit errors, preserve exact native PCM matching, and remove obsolete media-service fallbacks, extraction paths and legacy cleanup branches.
+- Use typed operational states and VERSION-derived assembly/runtime version. Add bounded local logs, read-only job details, 50-row search/pagination and keyed dashboard updates.
+- Preserve independent worker limits, single destination attempts, OGP-only green OK, no remote content readback, and normal proxy admission after terminal delivery failures.
+- Validation: **131 automated cases passed**, including real-media engine/codec processing, 500-clip orchestration, delayed/failed checkpoints, slow/hung scans, log rotation, error filtering, source delete-sharing and shared-host shutdown. The separate 500-entry dashboard check passed. One opt-in production-fixture test was skipped; the release smoke used real production MXF media as described below.
+- Live smoke: two uniquely named copies of a 5.92 s production MXF published successfully to the currently enabled Tria, with OGP OK and both proxies Ready. Discovery-to-publication was 12.70/12.72 s, including the unchanged 10 s stability wait; probe 0.39/0.40 s, wrap 1.20/1.23 s, copy 0.76/0.75 s. Both copies completed before new proxies started. Source removal retired the local test jobs/proxies and released all cache reservations while retaining anonymous counters and final server clips. No playback commands or remote media/header reads were used.
+- Correct duplicate disposal of the shared engine so console shutdown releases its locks without an exception.
+
 
 ### 0.3.1 — 2026-11-27
 

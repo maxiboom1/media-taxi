@@ -53,7 +53,7 @@ public sealed class ProductionMediaTests
             var streamed = await service.WrapSourceAsync(source, inspection, work, output, job, null, default);
             var artifact = streamed.Artifact;
             Assert.DoesNotContain(Directory.EnumerateFiles(work), p => p.EndsWith(".h264", StringComparison.OrdinalIgnoreCase));
-            var media = await service.ExtractClipAsync(output, extracted, default);
+            var media = await ClipTestSupport.ExtractAsync(output, extracted, default);
             Assert.Equal(item.GetProperty("frames").GetInt64(), media.FrameCount);
             Assert.Equal(item.GetProperty("timecode_offset_frames").GetInt64(), media.TimecodeStartFrames);
             var sourceChannels = item.GetProperty("source_audio_channels").GetInt32();

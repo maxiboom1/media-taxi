@@ -22,8 +22,7 @@ public sealed class FolderScanner(TaxiOptions options)
                     if (Temporary(name)) continue;
                     var f = new FileInfo(name); own.Add(new(f.FullName, location, f.Length, f.LastWriteTimeUtc, f.CreationTimeUtc));
                 }
-                var h = FolderAccess.Check(location.ToString(), path, true); health.Add(h);
-                if (!h.Readable) complete = false;
+                health.Add(new(location.ToString(), path, true, false, null, null));
                 files.AddRange(own);
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -43,9 +42,11 @@ public static class FolderAccess
     public static FolderHealth Check(string id, string path, bool testWrite)
     {
         string? probe = null;
+        var readable = false;
         try
         {
             _ = Directory.EnumerateFileSystemEntries(path).Take(1).ToArray();
+            readable = true;
             if (testWrite)
             {
                 probe = Path.Combine(path, $".media-taxi-health-{Guid.NewGuid():N}.tmp");
@@ -54,10 +55,10 @@ public static class FolderAccess
             }
             long? free = null;
             try { free = new DriveInfo(Path.GetPathRoot(path)!).AvailableFreeSpace; } catch (Exception ex) when (ex is IOException or ArgumentException or UnauthorizedAccessException) { }
-            return new(id, path, true, testWrite, free, null);
+            return new(id, path, true, testWrite, free, null, testWrite ? DateTimeOffset.UtcNow : null);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        { return new(id, path, Directory.Exists(path), false, null, ex.Message); }
+        { return new(id, path, readable, false, null, ex.Message, testWrite && readable ? DateTimeOffset.UtcNow : null); }
         finally { if (probe is not null) try { File.Delete(probe); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { } }
     }
 }

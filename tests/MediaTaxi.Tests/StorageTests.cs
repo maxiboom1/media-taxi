@@ -12,8 +12,9 @@ public sealed class StorageTests
         using var temp = new TemporaryFolder();
         using var store = new JobStore(temp.Path);
         var j = new JobRecord { OriginalName = "news.mxf" }; store.Save(j);
-        store.Record(j.Id, "processed", "Native"); store.Record(j.Id, "imported", "Native"); store.Record(j.Id, "imported", "Native");
-        store.Record("expired", "imported", "Transcoded", DateTimeOffset.UtcNow.AddHours(-25));
+        j.Mode = "Native"; store.SaveWithEvent(j, "processed"); store.SaveWithEvent(j, "imported"); store.SaveWithEvent(j, "imported");
+        var expired = new JobRecord { Id = "expired", Mode = "Transcoded" };
+        store.SaveWithEvent(expired, "imported", DateTimeOffset.UtcNow.AddHours(-25)); store.Delete(expired.Id);
         store.Delete(j.Id);
         Assert.Empty(store.Load()); Assert.Equal(1, store.Statistics().Imported); Assert.Equal(1, store.Statistics().NativeImported); Assert.Equal(0, store.Statistics().TranscodedImported);
     }

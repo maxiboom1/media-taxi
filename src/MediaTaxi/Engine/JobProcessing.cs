@@ -31,14 +31,15 @@ public sealed partial class JobEngine
             inventory.RequestRefresh(destination.Id);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (CheckpointException) { throw; }
         catch (Exception ex)
-        { Update(job, () => { record.CopyStatus = CopyState.Failed; record.Error = ex.Message; }); }
+        { Update(job, () => { record.CopyStatus = CopyState.Failed; record.Error = DiagnosticText.Summary(ex.Message); }); }
         finally { destinationSlots[destination.Id].Release(); }
     }
     private async Task MoveFailedAsync(JobRecord job, CancellationToken ct)
     {
         if (job.Location != SourceLocation.Watch) return;
-        if (!SourceMatches(job)) { Update(job, () => job.Stage = JobStage.MoveFailed); return; }
+        if (!SourceMatches(job)) return;
         try
         {
             var resumePublished = job.MoveLocation == SourceLocation.Failed && job.MoveTarget is not null;
@@ -46,12 +47,12 @@ public sealed partial class JobEngine
             if (!resumePublished && File.Exists(path)) path = Path.Combine(options.Folders.Failed, $"{job.ClipName}__{DateTimeOffset.UtcNow:yyyyMMddTHHmmss}_{job.Id[..8]}{Path.GetExtension(job.OriginalName)}");
             Update(job, () => { job.MoveTarget = path; job.MoveLocation = SourceLocation.Failed; });
             await FileOperations.MoveVerifiedAsync(job.SourcePath, path, job.Id, ct, resumePublished);
-            Update(job, () => { RefreshMovedSource(job, path, SourceLocation.Failed); job.Stage = JobStage.Failed; job.MoveTarget = null; job.MoveLocation = null; });
+            CompleteMove(job, path, SourceLocation.Failed, () => { ClearWait(job); job.Stage = JobStage.Failed; job.MoveTarget = null; job.MoveLocation = null; });
             ReleaseDeliveryCache(job);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        { Update(job, () => { job.Stage = JobStage.MoveFailed; job.Error = $"{job.Error} | Could not move source to Failed: {ex.Message}"; }); }
+        { Update(job, () => { job.Stage = JobStage.MoveFailed; job.Error = DiagnosticText.Summary($"{job.Diagnostic?.Summary ?? job.Error} | Could not move source to Failed: {ex.Message}"); }); }
     }
     private static bool SourceMatches(JobRecord j)
     {

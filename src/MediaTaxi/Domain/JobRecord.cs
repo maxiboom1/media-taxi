@@ -25,22 +25,25 @@ public sealed class JobRecord
     public string? Error { get; set; }
     public string? ArtifactPath { get; set; }
     public string? ArtifactSha256 { get; set; }
-    public string? ArtifactUuid { get; set; }
     public string? HeaderSha256 { get; set; }
     public string? PayloadSha256 { get; set; }
     public long ExpectedFrameCount { get; set; }
     public Media.MediaInspection? Inspection { get; set; }
-    public string HiresPhase { get; set; } = "Pending";
+    public HiresState HiresPhase { get; set; } = HiresState.Pending;
     public string? CacheWaitReason { get; set; }
     public string? ProxyDeferralReason { get; set; }
-    public string CacheState { get; set; } = "None";
+    public CacheLifecycle CacheState { get; set; } = CacheLifecycle.None;
     public long CacheReservationBytes { get; set; }
-    public string? CacheOwner { get; set; }
     public string? CacheError { get; set; }
-    public DateTimeOffset? ProxyReadyUtc { get; set; }
+    public DateTimeOffset? ProxyEligibleUtc { get; set; }
+    public SourceFingerprint? WatchedSource { get; set; }
+    public SourceWaitCode WaitCode { get; set; }
+    public string? WaitReason { get; set; }
+    public DateTimeOffset? WaitSinceUtc { get; set; }
+    public JobDiagnostic? Diagnostic { get; set; }
     public string? ProxyPath { get; set; }
     public string? ProxySha256 { get; set; }
-    public string ProxyStatus { get; set; } = "Pending";
+    public ProxyState ProxyStatus { get; set; } = ProxyState.Pending;
     public string? WorkPath { get; set; }
     public string? MoveTarget { get; set; }
     public SourceLocation? MoveLocation { get; set; }
@@ -69,3 +72,7 @@ public sealed class DestinationRecord
     public string? Error { get; set; }
     public string? TempPath { get; set; }
 }
+
+public enum SourceWaitCode { None, Stability, SharingViolation, SourceBlocked, CacheCapacity }
+public sealed record SourceFingerprint(string Path, long Size, DateTimeOffset WriteUtc, DateTimeOffset CreatedUtc);
+public sealed record JobDiagnostic(string Phase, string Summary, string Detail, int? ExitCode = null);

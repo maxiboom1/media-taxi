@@ -70,16 +70,44 @@ public sealed class JobStore : IDisposable
             return command.ExecuteScalar() as string;
         }
     }
-    public void Record(string jobId, string kind, string mode, DateTimeOffset? at = null)
+    public void PruneStatistics(DateTimeOffset? now = null)
     {
-        lock (gate) Execute("INSERT OR IGNORE INTO statistics(id,at,kind,mode) VALUES($id,$at,$kind,$mode)", ("$id", jobId + ":" + kind), ("$at", (at ?? DateTimeOffset.UtcNow).ToUnixTimeMilliseconds()), ("$kind", kind), ("$mode", mode));
+        lock (gate) Execute("DELETE FROM statistics WHERE at<$cutoff", ("$cutoff", (now ?? DateTimeOffset.UtcNow).AddHours(-24).ToUnixTimeMilliseconds()));
+    }
+    public void WriteBatch(IReadOnlyList<JobCheckpoint> batch)
+    {
+        lock (gate)
+        {
+            using var transaction = connection.BeginTransaction();
+            foreach (var item in batch)
+            {
+                using var command = connection.CreateCommand(); command.Transaction = transaction;
+                command.Parameters.AddWithValue("$id", item.Id);
+                if (item.Payload is null)
+                    command.CommandText = "DELETE FROM jobs WHERE id=$id; DELETE FROM artifacts WHERE job_id=$id";
+                else
+                {
+                    command.CommandText = "INSERT INTO jobs(id,payload) VALUES($id,$payload) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload";
+                    command.Parameters.AddWithValue("$payload", item.Payload);
+                    if (item.EventKind is not null)
+                    {
+                        command.CommandText += "; INSERT OR IGNORE INTO statistics(id,at,kind,mode) VALUES($event,$at,$kind,$mode)";
+                        command.Parameters.AddWithValue("$event", item.Id + ":" + item.EventKind);
+                        command.Parameters.AddWithValue("$at", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+                        command.Parameters.AddWithValue("$kind", item.EventKind);
+                        command.Parameters.AddWithValue("$mode", item.Mode);
+                    }
+                }
+                command.ExecuteNonQuery();
+            }
+            transaction.Commit();
+        }
     }
     public StatisticsSnapshot Statistics(DateTimeOffset? now = null)
     {
         lock (gate)
         {
             var cutoff = (now ?? DateTimeOffset.UtcNow).AddHours(-24).ToUnixTimeMilliseconds();
-            Execute("DELETE FROM statistics WHERE at<$cutoff", ("$cutoff", cutoff));
             using var command = connection.CreateCommand(); command.CommandText = "SELECT kind,mode,count(*) FROM statistics WHERE at >= $cutoff GROUP BY kind,mode"; command.Parameters.AddWithValue("$cutoff", cutoff);
             using var reader = command.ExecuteReader(); var counts = new Dictionary<(string, string), int>();
             while (reader.Read()) counts[(reader.GetString(0), reader.GetString(1))] = reader.GetInt32(2);

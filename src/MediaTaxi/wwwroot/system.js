@@ -39,7 +39,8 @@ function renderSystem(system) {
   byId("folder-body").replaceChildren(...system.folders.map((folder) => {
     const row = element("tr");
     const read = cell(); read.append(badge(folder.readable ? "OK" : "Unavailable", folder.readable ? "success" : "failure"));
-    const write = cell(); write.append(badge(folder.writable ? "OK" : "Unavailable", folder.writable ? "success" : "failure"));
+    const write = cell(); write.append(badge(folder.writable ? "OK" : folder.writeCheckedUtc ? "Unavailable" : "Unknown", folder.writable ? "success" : "warning"));
+    write.title = folder.writeCheckedUtc ? `Checked ${formatDate(folder.writeCheckedUtc)}` : "Write check pending";
     row.append(cell(folder.id), cell(folder.path, "path-cell"), read, write, cell(formatBytes(folder.freeBytes)), cell(folder.error || "—", folder.error ? "failure-text" : "muted"));
     return row;
   }));
@@ -62,6 +63,10 @@ function renderSystem(system) {
   byId("stages").replaceChildren(...(stages.length ? stages.map(([name, count]) => {
     const item = element("div", null, "worker-count"); item.append(element("span", stageLabels[name] || name), element("strong", count)); return item;
   }) : [element("span", "No active jobs.", "muted")]));
+  renderList("source-blockers", system.sourceBlockers || [], "No source blockers.");
+  const diagnostics = [["Source scan", formatDate(system.sourceScanUtc)], ["Checkpoints queued", system.pendingCheckpoints || 0], ["Persistence", system.persistenceError || "OK"],
+    ["File logs", system.logging?.enabled ? system.logging.directory : "Disabled"], ["Log error", system.logging?.error || "None"], ["Dropped log messages", system.logging?.droppedMessages || 0]];
+  byId("diagnostic-details").replaceChildren(...diagnostics.flatMap(([key, value]) => [element("dt", key), element("dd", value)]));
   renderList("cleanup-list", system.cleanupPending, "No cleanup pending.");
   renderList("error-list", system.errors, "No current system errors.");
 }
@@ -78,6 +83,6 @@ async function refresh() {
   finally { loading = false; }
 }
 
-connectEvents(() => { clearTimeout(refreshTimer); refreshTimer = setTimeout(refresh, 300); });
+connectEvents(() => { if (!refreshTimer) refreshTimer = setTimeout(() => { refreshTimer = undefined; refresh(); }, 500); });
 refresh();
 setInterval(refresh, 10000);

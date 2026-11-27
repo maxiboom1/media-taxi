@@ -23,10 +23,12 @@
       <div class="table-wrap"><table><thead><tr><th scope="col">Server</th><th scope="col">OGP socket</th><th scope="col">Inventory</th><th scope="col">Last complete inventory</th><th scope="col">Error</th></tr></thead><tbody id="server-body"></tbody></table></div>
     </section>
     <section class="panel">
-      <div class="section-heading"><h3>Folder access</h3><span>Read/write checks use app-owned temporary files</span></div>
+      <div class="section-heading"><h3>Folder access</h3><span>Read-only scans; periodic write/delete checks</span></div>
       <div class="table-wrap"><table><thead><tr><th scope="col">Folder</th><th scope="col">Path</th><th scope="col">Read</th><th scope="col">Write</th><th scope="col">Available space</th><th scope="col">Error</th></tr></thead><tbody id="folder-body"></tbody></table></div>
     </section>
     <div class="system-grid">
+      <section class="panel"><div class="section-heading"><h3>Diagnostics</h3></div><dl class="tool-details" id="diagnostic-details"></dl></section>
+      <section class="panel"><div class="section-heading"><h3>Source blockers</h3></div><ul class="message-list" id="source-blockers"></ul></section>
       <section class="panel"><div class="section-heading"><h3>Temporary cache</h3></div><dl class="tool-details" id="cache-details"></dl></section>
       <section class="panel"><div class="section-heading"><h3>Media tools</h3><span class="badge" id="media-ready">Checking</span></div><dl class="tool-details" id="media-details"></dl></section>
       <section class="panel"><div class="section-heading"><h3>Workers</h3><span id="queue-count">0 queued</span></div><div class="worker-grid" id="workers"></div><div class="section-heading"><h3>Current stages</h3></div><div class="worker-grid" id="stages" role="status"></div></section>

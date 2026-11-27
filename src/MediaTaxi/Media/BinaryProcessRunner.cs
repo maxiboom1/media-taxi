@@ -24,19 +24,21 @@ public sealed partial class MediaProcessRunner
             // Consumer backpressure is the only video queue. No unbounded byte channel.
             await consume(process.StandardOutput.BaseStream, timeout.Token);
             await process.WaitForExitAsync(timeout.Token); await drain;
-            if (process.ExitCode != 0) throw new IOException($"FFmpeg exited {process.ExitCode}: {errors}");
+            if (process.ExitCode != 0) throw new MediaProcessException(executable, process.ExitCode, errors.ToString());
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         { throw new TimeoutException($"FFmpeg exceeded {timeoutSeconds} seconds."); }
+        catch (Exception ex) when (ex is not OperationCanceledException and not MediaProcessException)
+        {
+            var exited = process.HasExited;
+            await FinishAsync(process, timeout, drain);
+            if (exited && process.ExitCode != 0) throw new MediaProcessException(executable, process.ExitCode, errors.ToString());
+            if (errors.Length > 0) ex.Data["mediaDiagnostics"] = DiagnosticText.Tail(errors.ToString());
+            throw;
+        }
         finally
         {
-            if (!process.HasExited)
-            {
-                try { process.Kill(true); } catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception) { }
-                await process.WaitForExitAsync(CancellationToken.None);
-            }
-            await timeout.CancelAsync();
-            try { await drain; } catch (OperationCanceledException) { }
+            await FinishAsync(process, timeout, drain);
         }
     }
 }

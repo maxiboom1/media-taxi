@@ -43,17 +43,24 @@ public sealed class WindowsInputProcess : IDisposable
             var info = new StartupInfoEx { Attributes = attributes, Startup = new() { Size = Marshal.SizeOf<StartupInfoEx>(), Flags = 0x100,
                 Input = childInput.DangerousGetHandle(), Output = outWrite.DangerousGetHandle(), Error = errWrite.DangerousGetHandle() } };
             var command = new StringBuilder(string.Join(' ', new[] { executable }.Concat(arguments).Select(Quote)));
-            Check(CreateProcessW(executable, command, IntPtr.Zero, IntPtr.Zero, true, 0x08080000, IntPtr.Zero, null, ref info, out var pi));
+            // Attach/open the managed process handle before the child can exit.
+            Check(CreateProcessW(executable, command, IntPtr.Zero, IntPtr.Zero, true, 0x08080004, IntPtr.Zero, null, ref info, out var pi));
             using var processHandle = new SafeFileHandle(pi.Process, true);
             using var threadHandle = new SafeFileHandle(pi.Thread, true);
-            // Duplicate the parent read handles into independently owned wrappers.
-            Check(DuplicateHandle(GetCurrentProcess(), outRead, GetCurrentProcess(), out var output, 0, false, 2));
+            Process? managed = null;
+            SafeFileHandle? output = null, error = null;
             try
             {
-                Check(DuplicateHandle(GetCurrentProcess(), errRead, GetCurrentProcess(), out var error, 0, false, 2));
-                return new(Process.GetProcessById(pi.ProcessId), output, error);
+                managed = Process.GetProcessById(pi.ProcessId);
+                _ = managed.Handle;
+                Check(DuplicateHandle(GetCurrentProcess(), outRead, GetCurrentProcess(), out output, 0, false, 2));
+                Check(DuplicateHandle(GetCurrentProcess(), errRead, GetCurrentProcess(), out error, 0, false, 2));
+                var child = new WindowsInputProcess(managed, output, error);
+                if (ResumeThread(threadHandle) == uint.MaxValue)
+                { var errorCode = Marshal.GetLastWin32Error(); child.Dispose(); throw new Win32Exception(errorCode); }
+                return child;
             }
-            catch { output.Dispose(); throw; }
+            catch { TerminateProcess(processHandle, 1); managed?.Dispose(); output?.Dispose(); error?.Dispose(); throw; }
         }
         finally
         {
@@ -86,6 +93,8 @@ public sealed class WindowsInputProcess : IDisposable
     [StructLayout(LayoutKind.Sequential)] private struct ProcessInformation { public IntPtr Process, Thread; public int ProcessId, ThreadId; }
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool CreatePipe(out SafeFileHandle read, out SafeFileHandle write, ref SecurityAttributes attributes, int size);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool SetHandleInformation(SafeFileHandle handle, int mask, int flags);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern uint ResumeThread(SafeFileHandle thread);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool TerminateProcess(SafeFileHandle process, uint exitCode);
     [DllImport("kernel32.dll")] private static extern IntPtr GetCurrentProcess();
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool DuplicateHandle(IntPtr sourceProcess, SafeFileHandle source, IntPtr targetProcess, out SafeFileHandle target, int access, bool inherit, int options);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool InitializeProcThreadAttributeList(IntPtr list, int count, int flags, ref nuint size);

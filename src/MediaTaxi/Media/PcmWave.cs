@@ -80,19 +80,6 @@ public static class PcmWave
         return stream.ToArray();
     }
 
-    public static void InterleaveRecord(ReadOnlySpan<byte> auk, Span<byte> pcm)
-    {
-        ReadOnlySpan<byte> magic = [6, 165, 236, 171];
-        for (var channel = 0; channel < 8; channel++)
-        {
-            var block = auk.Slice(channel * 4096, 4096);
-            if (!block[..4].SequenceEqual(magic) || block[6] != channel || block[7] != 1)
-                throw new MediaMismatchException("Invalid AUK channel header");
-            for (var sample = 0; sample < 960; sample++)
-                block.Slice(32 + sample * 4, 4).CopyTo(pcm.Slice((sample * 8 + channel) * 4, 4));
-        }
-    }
-
     public static void PackRecord(ReadOnlySpan<byte> pcm, int inputChannels, Span<byte> auk, uint sequence)
     {
         auk.Clear();

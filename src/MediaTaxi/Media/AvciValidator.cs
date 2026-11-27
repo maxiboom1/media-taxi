@@ -8,25 +8,6 @@ public static class AvciValidator
     public const int FrameBytes = 568832;
     public static ReadOnlySpan<byte> Aud => [0, 0, 0, 1, 9, 16];
 
-    public static async Task<long> ValidateFileAsync(string path, CancellationToken cancellationToken)
-    {
-        var length = new FileInfo(path).Length;
-        if (length == 0 || length % FrameBytes != 0)
-            throw new MediaMismatchException($"AVC-Intra essence must contain whole {FrameBytes}-byte frames");
-        var buffer = ArrayPool<byte>.Shared.Rent(FrameBytes);
-        try
-        {
-            await using var source = File.OpenRead(path);
-            for (long index = 0; index < length / FrameBytes; index++)
-            {
-                await source.ReadExactlyAsync(buffer.AsMemory(0, FrameBytes), cancellationToken);
-                ValidateFrame(buffer.AsSpan(0, FrameBytes));
-            }
-        }
-        finally { ArrayPool<byte>.Shared.Return(buffer); }
-        return length / FrameBytes;
-    }
-
     public static void ValidateFrame(ReadOnlySpan<byte> frame)
     {
         if (frame.Length != FrameBytes || !frame.StartsWith(Aud))

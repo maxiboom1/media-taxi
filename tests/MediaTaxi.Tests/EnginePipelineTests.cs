@@ -475,7 +475,14 @@ public sealed class EnginePipelineTests
         public bool ProxyCancelled { get; private set; }
         public TaskCompletionSource ProxyStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public int PrepareCalls, WrapCalls, ProxyCalls;
-        public Task<bool> IsNativeAsync(string source, CancellationToken cancellationToken) => Task.FromResult(Native);
+        public Task<MediaInspection> InspectAsync(string source, CancellationToken cancellationToken) => Task.FromResult(new MediaInspection(Native, "AVC-Intra 100 / 1080p50 / PCM stereo"));
+        public async Task<WrappedSource> WrapSourceAsync(string source, MediaInspection inspection, string work, string output, string id, Action<double>? progress, CancellationToken ct)
+        {
+            var prepared = await PrepareAsync(source, work, progress, ct);
+            return new(await WrapAsync(prepared, output, id, ct), prepared.FrameCount);
+        }
+        public Task<ProxyArtifact> CreateSourceProxyAsync(string source, MediaInspection? inspection, long frames, string output, string id, Action<double>? progress, CancellationToken ct) =>
+            CreateProxyAsync(new PreparedMedia(source, source, frames, 8, 0, Native, ""), output, id, progress, ct);
         public Task<MediaHealth> CheckHealthAsync(CancellationToken cancellationToken) => Task.FromResult(new MediaHealth(true, "fake ffmpeg", "fake ffprobe", ["libx264", "aac"], null));
         public Task<PreparedMedia> PrepareAsync(string source, string workDirectory, Action<double>? progress, CancellationToken cancellationToken)
         {
@@ -489,7 +496,6 @@ public sealed class EnginePipelineTests
             await File.WriteAllBytesAsync(outputPath, bytes, cancellationToken);
             return new(outputPath, await FileOperations.HashAsync(outputPath, cancellationToken), jobId);
         }
-        public Task<PreparedMedia> ExtractClipAsync(string clipPath, string workDirectory, CancellationToken cancellationToken) => Task.FromResult(new PreparedMedia(clipPath, clipPath, 50, 2, 0, Native, "Recovered media"));
         public async Task<ProxyArtifact> CreateProxyAsync(PreparedMedia media, string outputPath, string jobId, Action<double>? progress, CancellationToken cancellationToken)
         {
             Interlocked.Increment(ref ProxyCalls); progress?.Invoke(50);

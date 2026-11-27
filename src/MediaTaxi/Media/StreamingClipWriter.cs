@@ -5,7 +5,6 @@ namespace MediaTaxi.Media;
 public static class StreamingClipWriter
 {
     // One fixed AU plus bounded FileStream/OS pipe buffers, well below 8 MiB.
-    public const int MaximumManagedBufferBytes = 2 * 1024 * 1024;
     public static async Task<WrappedSource> WriteAsync(string outputPath, string jobId, long timecode,
         string audioPath, Func<Func<Stream, CancellationToken, Task>, Task> produce,
         long maximumFrames, CancellationToken ct)
@@ -43,7 +42,7 @@ public static class StreamingClipWriter
                     while (left > 0) { var n = (int)Math.Min(left, zero.Length); await silence.WriteAsync(zero.AsMemory(0, n), ct); left -= n; }
                 }
                 var audio = PcmWave.ReadInfo(audioPath);
-                if (audio.Samples != frames * 960) throw new MediaMismatchException("Native audio/video durations differ.");
+                if (audio.Samples != frames * 960) throw new MediaMismatchException($"Audio/video duration mismatch: expected {frames * 960} PCM samples, got {audio.Samples}; delta {audio.Samples - frames * 960} samples (strict matching)");
                 var pcm = new byte[960 * audio.Channels * 4]; var auk = new byte[FlatClip.AudioStride];
                 await using (var input = File.OpenRead(audioPath))
                 {

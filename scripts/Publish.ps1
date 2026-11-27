@@ -59,6 +59,11 @@ if (-not $DotnetPath) {
     if (Test-Path -LiteralPath $localSdk) { $DotnetPath = $localSdk } else { $DotnetPath = (Get-Command dotnet -ErrorAction Stop).Source }
 }
 $version = (Get-Content -LiteralPath (Join-Path $projectRoot 'VERSION') -Raw).Trim()
+$readmeText = Get-Content -LiteralPath (Join-Path $projectRoot 'README.md') -Raw
+$templateText = Get-Content -LiteralPath (Join-Path $projectRoot 'media-taxi.example.ini') -Raw
+if (-not $readmeText.Contains("**$version ·") -or -not $readmeText.Contains("### $version —") -or -not $templateText.Contains("Media Taxi $version.")) {
+    throw 'VERSION, README headline/changelog and INI template must agree before publishing.'
+}
 & $DotnetPath publish (Join-Path $projectRoot 'src\MediaTaxi\MediaTaxi.csproj') -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -o $stage
 if ($LASTEXITCODE -ne 0) { throw 'dotnet publish failed' }
 Copy-Item -LiteralPath (Join-Path $projectRoot 'README.md'),(Join-Path $projectRoot 'VERSION') -Destination $stage
@@ -105,6 +110,8 @@ foreach ($file in Get-ChildItem -LiteralPath $stage -File -Recurse -Force) {
 }
 & (Join-Path $current 'MediaTaxi.exe') --validate-config
 if ($LASTEXITCODE -ne 0) { throw 'Current private INI failed validation; old artifacts were retained.' }
+$runtimeVersion = & (Join-Path $current 'MediaTaxi.exe') --version
+if ($LASTEXITCODE -ne 0 -or $runtimeVersion -ne "Media Taxi $version") { throw 'Published executable version does not match VERSION.' }
 Copy-Item -LiteralPath $stagedZip -Destination $zipPath -Force
 # Current data/settings are now independent of every superseded generated output.
 foreach ($old in Get-ChildItem -LiteralPath $artifactRoot -Force) {

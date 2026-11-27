@@ -7,8 +7,9 @@ public sealed partial class JobEngine
 {
     private async Task RetireAbsentAsync(IReadOnlyList<SourceFile> snapshot, CancellationToken ct)
     {
-        List<JobRecord> candidates;
-        lock (gate)
+        List<JobRecord> candidates = [];
+        var cancel = new List<CancellationTokenSource>();
+        Mutate(batch =>
         {
             foreach (var job in jobs.Values)
             {
@@ -16,17 +17,18 @@ public sealed partial class JobEngine
                 var movePresent = job.MoveTarget is not null && snapshot.Any(f => string.Equals(f.Path, job.MoveTarget, StringComparison.OrdinalIgnoreCase) && f.Size == job.SourceSize);
                 if (present || movePresent) { job.AbsentScans = 0; job.LastAbsentScanUtc = null; continue; }
                 if (job.LastAbsentScanUtc is null || DateTimeOffset.UtcNow - job.LastAbsentScanUtc >= TimeSpan.FromSeconds(options.Timing.ReconcileSeconds))
-                { job.AbsentScans++; job.LastAbsentScanUtc = DateTimeOffset.UtcNow; store.Save(job); }
+                { job.AbsentScans++; job.LastAbsentScanUtc = DateTimeOffset.UtcNow; batch.Add(JobCheckpoint.Save(job)); }
                 if (job.AbsentScans >= 2)
                 {
                     job.Retiring = true;
-                    if (running.TryGetValue(job.Id, out var task)) task.Cancellation.Cancel();
-                    if (proxyRunning.TryGetValue(job.Id, out var proxy)) proxy.Cancellation.Cancel();
-                    store.Save(job);
+                    if (running.TryGetValue(job.Id, out var task)) cancel.Add(task.Cancellation);
+                    if (proxyRunning.TryGetValue(job.Id, out var proxy)) cancel.Add(proxy.Cancellation);
+                    batch.Add(JobCheckpoint.Save(job));
                 }
             }
             candidates = jobs.Values.Where(j => j.Retiring && !running.ContainsKey(j.Id) && !proxyRunning.ContainsKey(j.Id)).ToList();
-        }
+        });
+        foreach (var c in cancel) { try { c.Cancel(); } catch (ObjectDisposedException) { } }
         foreach (var job in candidates)
         {
             var nameLock = nameLocks.GetOrAdd(job.ClipName, _ => new SemaphoreSlim(1));
@@ -35,7 +37,7 @@ public sealed partial class JobEngine
             {
                 if (!job.Managed)
                 {
-                    lock (gate) { jobs.Remove(job.Id); store.Delete(job.Id); Changed(); }
+                    DeleteJob(job);
                     continue;
                 }
                 lock (gate)
@@ -57,9 +59,9 @@ public sealed partial class JobEngine
                 }
                 RemoveOwnedPartials(job);
                 RemoveOwnedDestinationPartials(job);
-                ClearLegacyWork(job);
-                if (!cache.Release(job, out var cacheError)) throw new IOException(cacheError);
-                lock (gate) { jobs.Remove(job.Id); store.Delete(job.Id); Changed(); }
+                var cacheSnapshot = Snapshot(job);
+                if (!cache.Release(cacheSnapshot, out var cacheError)) throw new IOException(cacheError);
+                DeleteJob(job);
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             { Update(job, () => { job.Stage = JobStage.CleanupPending; job.Error = ex.Message; }); }

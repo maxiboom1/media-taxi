@@ -18,12 +18,12 @@ public sealed class EngineRecoveryTests
         using var fixture = new RecoveryFixture();
         var job = fixture.Seed("released.mxf", SourceLocation.Finished, JobStage.Proxy);
         fixture.ReserveOutputs(job); job.Wrapped = true; job.Archived = true; job.DeliveryCompleted = true;
-        job.ExpectedFrameCount = 50; job.CacheState = "Released"; job.Destinations[0].CopyStatus = CopyState.Failed;
+        job.ExpectedFrameCount = 50; job.CacheState = CacheLifecycle.Released; job.Destinations[0].CopyStatus = CopyState.Failed;
         fixture.Store.Save(job);
         using var engine = fixture.CreateEngine();
         await fixture.PumpUntilAsync(engine, () => fixture.Store.Load().Any(j => j.Stage == JobStage.Done));
         var done = Assert.Single(fixture.Store.Load());
-        Assert.Equal("Ready", done.ProxyStatus); Assert.Equal(CopyState.Failed, done.Destinations[0].CopyStatus);
+        Assert.Equal(ProxyState.Ready, done.ProxyStatus); Assert.Equal(CopyState.Failed, done.Destinations[0].CopyStatus);
         Assert.Equal(0, fixture.Media.PrepareCalls); Assert.Equal(0, fixture.Media.ExtractCalls);
         Assert.False(File.Exists(Path.Combine(fixture.Options.Destinations[0].Path, "released.clip")));
         Assert.Equal(job.FirstSeenUtc, done.FirstSeenUtc);
@@ -39,7 +39,7 @@ public sealed class EngineRecoveryTests
         await fixture.PumpUntilAsync(engine, () => fixture.Store.Load().Any(j => j.Stage == JobStage.Done));
         var done = Assert.Single(fixture.Store.Load());
         Assert.Equal(1, fixture.Media.PrepareCalls); Assert.Equal(CopyState.Succeeded, done.Destinations[0].CopyStatus);
-        Assert.False(File.Exists(done.ArtifactPath)); Assert.Equal("Released", done.CacheState);
+        Assert.False(File.Exists(done.ArtifactPath)); Assert.Equal(CacheLifecycle.Released, done.CacheState);
         Assert.Equal(0, engine.GetStatistics().Processed); Assert.Equal(1, engine.GetStatistics().Imported);
     }
     [Fact]
@@ -122,7 +122,7 @@ public sealed class EngineRecoveryTests
         job.ArtifactSha256 = await FileOperations.HashAsync(job.ArtifactPath!, default);
         Directory.CreateDirectory(job.WorkPath!); File.WriteAllText(Path.Combine(job.WorkPath!, "video.h264"), "old extraction");
         File.WriteAllText(job.ProxyPath + "." + job.Id + ".partial", "old proxy"); fixture.Store.Save(job);
-        fixture.Store.Record(job.Id, "processed", job.Mode);
+        fixture.Store.SaveWithEvent(job, "processed");
         using var engine = fixture.CreateEngine();
         await fixture.PumpUntilAsync(engine, () => fixture.Store.Load().Any(j => j.Stage == JobStage.Done));
         var done = Assert.Single(fixture.Store.Load());
@@ -234,6 +234,7 @@ public sealed class EngineRecoveryTests
     {
         using var fixture = new RecoveryFixture();
         fixture.Options.Timing.StabilitySeconds = 3600;
+        fixture.Options.Timing.HealthCheckTimeoutSeconds = 1;
         using var release = new ManualResetEventSlim();
         var calls = 0;
         FolderHealth Probe(string id, string path, bool write)
@@ -261,6 +262,7 @@ public sealed class EngineRecoveryTests
     public async Task TimedOutSourceScanPausesCleanupAndKeepsOnlyOneEnumeration()
     {
         using var fixture = new RecoveryFixture();
+        fixture.Options.Timing.SourceScanTimeoutSeconds = 2;
         var tracked = fixture.Seed("old.mxf", SourceLocation.Finished, JobStage.Existing);
         tracked.Managed = false; fixture.Store.Save(tracked); File.Delete(tracked.SourcePath);
         using var release = new ManualResetEventSlim();
@@ -294,8 +296,8 @@ internal sealed class RecoveryFixture : IDisposable
         Options.Destinations.Add(new() { Id = "tria", Name = "TLV1", Path = Root("tria"), Host = "127.0.0.1" });
         Store = new(Options.Folders.State); inventory = new(Options, NullLogger<InventoryService>.Instance);
     }
-    public JobEngine CreateEngine(Func<FolderScan>? scan = null, Func<string, string, bool, FolderHealth>? folderProbe = null) =>
-        new(Options, Store, Media, inventory, NullLogger<JobEngine>.Instance, scan, folderProbe);
+    public JobEngine CreateEngine(Func<FolderScan>? scan = null, Func<string, string, bool, FolderHealth>? folderProbe = null, Action<IReadOnlyList<JobCheckpoint>>? checkpoint = null) =>
+        new(Options, Store, Media, inventory, NullLogger<JobEngine>.Instance, scan, folderProbe, checkpoint);
     public JobRecord Seed(string name, SourceLocation location, JobStage stage)
     {
         var root = location == SourceLocation.Watch ? Options.Folders.Watch : location == SourceLocation.Finished ? Options.Folders.Finished : Options.Folders.Failed;
@@ -307,10 +309,10 @@ internal sealed class RecoveryFixture : IDisposable
     }
     public void ReserveOutputs(JobRecord job)
     {
-        var legacy = Path.Combine(Path.GetDirectoryName(Options.Folders.Work)!, "legacy"); Directory.CreateDirectory(legacy);
-        job.ArtifactPath = Path.Combine(legacy, job.ClipName + ".clip");
         job.ProxyPath = Path.Combine(Options.Folders.Proxy, job.ClipName + ".mp4");
-        job.WorkPath = Path.Combine(Options.Folders.Work, job.Id);
+        using var cache = new WorkCache(Options);
+        cache.Prepare(job);
+        job.ArtifactPath = Path.Combine(job.WorkPath!, "delivery.clip");
         Assert.True(Store.Claim(job.ArtifactPath, job.Id, "clip")); Assert.True(Store.Claim(job.ProxyPath, job.Id, "proxy"));
     }
     public async Task PumpUntilAsync(JobEngine engine, Func<bool> condition)
@@ -329,9 +331,16 @@ internal sealed class RecoveryFixture : IDisposable
 
 internal sealed class RecoveryMedia : IMediaService
 {
-    public int PrepareCalls, ExtractCalls;
+    public int PrepareCalls;
+    public int ExtractCalls => 0;
     public bool Native { get; set; } = true;
-    public Task<bool> IsNativeAsync(string source, CancellationToken ct) => Task.FromResult(Native);
+    public async Task<WrappedSource> WrapSourceAsync(string source, MediaInspection inspection, string work, string output, string id, Action<double>? progress, CancellationToken ct)
+    {
+        var prepared = await PrepareAsync(source, work, progress, ct);
+        return new(await WrapAsync(prepared, output, id, ct), prepared.FrameCount);
+    }
+    public Task<ProxyArtifact> CreateSourceProxyAsync(string source, MediaInspection? inspection, long frames, string output, string id, Action<double>? progress, CancellationToken ct) =>
+        CreateProxyAsync(new PreparedMedia(source, source, frames, 8, 0, Native, ""), output, id, progress, ct);
     public Task<MediaInspection> InspectAsync(string source, CancellationToken ct) => Task.FromResult(new MediaInspection(Native, Native ? "Native test media" : "H.264 / 1280x720 / 25 fps"));
     public Task<MediaHealth> CheckHealthAsync(CancellationToken ct) => Task.FromResult(new MediaHealth(true, "fake", "fake", ["libx264", "aac"], null));
     public Task<PreparedMedia> PrepareAsync(string source, string work, Action<double>? progress, CancellationToken ct)
@@ -339,14 +348,9 @@ internal sealed class RecoveryMedia : IMediaService
         Interlocked.Increment(ref PrepareCalls); AssertFresh(work);
         return Task.FromResult(new PreparedMedia(source, source, 50, 2, 0, true, "Native test media"));
     }
-    public Task<PreparedMedia> ExtractClipAsync(string clip, string work, CancellationToken ct)
-    {
-        Interlocked.Increment(ref ExtractCalls); AssertFresh(work);
-        return Task.FromResult(new PreparedMedia(clip, clip, 50, 8, 0, true, "Recovered test media"));
-    }
     private static void AssertFresh(string work)
     {
-        Assert.False(Directory.Exists(work) && Directory.EnumerateFileSystemEntries(work).Any(p => Path.GetFileName(p) != ".owner"), "Interrupted preparation was not cleared.");
+        Assert.False(Directory.Exists(work) && Directory.EnumerateFiles(work).Any(p => Path.GetFileName(p) is "video.h264" or "audio.wav"), "Interrupted preparation was not cleared.");
         Directory.CreateDirectory(work); File.WriteAllText(Path.Combine(work, "video.h264"), "prepared");
     }
     public async Task<ClipArtifact> WrapAsync(PreparedMedia media, string output, string id, CancellationToken ct)

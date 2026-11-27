@@ -32,7 +32,7 @@ public sealed class StoreTransactionTests
     public void CommittedEventsRemainAfterSourceJobRetirementAndReopen()
     {
         using var temporary = new TemporaryFolder();
-        var job = new JobRecord { OriginalName = "retired.mxf", Mode = "Transcoded", Stage = JobStage.Done, Wrapped = true, Archived = true, ProxyStatus = "Ready" };
+        var job = new JobRecord { OriginalName = "retired.mxf", Mode = "Transcoded", Stage = JobStage.Done, Wrapped = true, Archived = true, ProxyStatus = ProxyState.Ready };
         using (var store = new JobStore(temporary.Path))
         {
             foreach (var kind in new[] { "processed", "imported", "proxy" })

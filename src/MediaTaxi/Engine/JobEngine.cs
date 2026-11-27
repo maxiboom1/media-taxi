@@ -22,6 +22,13 @@ public sealed partial class JobEngine : BackgroundService, IApplicationView
     private readonly ConcurrentDictionary<string, (Task Task, CancellationTokenSource Cancellation)> running = new();
     private readonly ConcurrentDictionary<string, (Task Task, CancellationTokenSource Cancellation)> proxyRunning = new();
     private readonly WorkCache cache;
+    private readonly SemaphoreSlim cacheGate = new(1, 1);
+    private readonly CheckpointWriter checkpoints;
+    private StatisticsSnapshot statistics;
+    private CacheSnapshot? cacheMetrics;
+    private DateTimeOffset? lastSourceScanUtc;
+    private DateTimeOffset nextHousekeeping;
+    private readonly Diagnostics.RollingFileLogger? fileLog;
     private Action? wakeEngine;
     private readonly ConcurrentDictionary<string, SemaphoreSlim> nameLocks = new(StringComparer.OrdinalIgnoreCase);
     private readonly SemaphoreSlim nativeSlots, normalizeSlots, copySlots;
@@ -38,22 +45,28 @@ public sealed partial class JobEngine : BackgroundService, IApplicationView
     private readonly CancellationTokenSource healthLifetime = new();
     private readonly Dictionary<string, HealthProbe<FolderHealth>> folderProbes = new(StringComparer.OrdinalIgnoreCase);
     private readonly HealthProbe<MediaHealth> mediaProbe = new();
-    private Task<FolderScan>? sourceScanTask;
+    private readonly Dictionary<string, (IReadOnlyList<string> Paths, HashSet<string> Index)> inventoryIndexes = new();
+    private Task<(FolderScan Scan, DateTimeOffset Completed)>? sourceScanTask;
     private DateTimeOffset sourceScanStarted;
+    private int disposed;
 
     public JobEngine(TaxiOptions options, JobStore store, IMediaService media, InventoryService inventory, ILogger<JobEngine> logger,
-        Func<FolderScan>? scanOverride = null, Func<string, string, bool, FolderHealth>? folderProbeOverride = null)
+        Func<FolderScan>? scanOverride = null, Func<string, string, bool, FolderHealth>? folderProbeOverride = null, Action<IReadOnlyList<JobCheckpoint>>? checkpointOverride = null, Diagnostics.RollingFileLogger? fileLog = null)
     {
         this.options = options; this.store = store; this.media = media; this.inventory = inventory; this.logger = logger;
         scanSources = scanOverride ?? new FolderScanner(options).Scan;
         probeFolder = folderProbeOverride ?? FolderAccess.Check;
         jobs = store.Load().ToDictionary(j => j.Id);
-        cache = new(options);
+        cache = new(options); this.fileLog = fileLog;
+        statistics = store.Statistics();
+        checkpoints = new(batch => { (checkpointOverride ?? store.WriteBatch)(batch); Volatile.Write(ref statistics, store.Statistics()); });
+        foreach (var job in jobs.Values.Where(j => j.Location == SourceLocation.Watch))
+            job.WatchedSource ??= new(job.SourcePath, job.SourceSize, job.SourceWriteUtc, job.SourceCreatedUtc);
         foreach (var job in jobs.Values.Where(j => j.Managed))
         {
             job.ProcessedCheckpoint |= job.Wrapped;
-            if (job.ProxyStatus == "Working") job.ProxyStatus = "Queued";
-            if (job.DeliveryCompleted) job.HiresPhase = "Complete";
+            if (job.ProxyStatus == ProxyState.Working) job.ProxyStatus = ProxyState.Queued;
+            if (job.DeliveryCompleted) job.HiresPhase = HiresState.Complete;
         }
         foreach (var job in jobs.Values.Where(j => j.Managed && j.Location == SourceLocation.Watch && !j.TerminalFailure && !j.Wrapped &&
                      j.Stage is JobStage.Probing or JobStage.Transcoding or JobStage.Wrapping))
@@ -63,15 +76,33 @@ public sealed partial class JobEngine : BackgroundService, IApplicationView
     }
     private static TaskCompletionSource NewSignal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
     public long Revision { get { lock (gate) return revision; } }
-    public bool IsReady { get { lock (gate) return processingReady; } }
+    public bool IsReady { get { lock (gate) return processingReady && checkpoints.Error is null; } }
     private void Changed()
     {
         revision++; var previous = signal; signal = NewSignal(); previous.TrySetResult();
     }
     private void Update(JobRecord job, Action action, bool persist = true, string? eventKind = null)
     {
-        lock (gate) { action(); if (persist) { if (eventKind is null) store.Save(job); else store.SaveWithEvent(job, eventKind); } Changed(); }
+        if (!persist) { lock (gate) { action(); Changed(); } return; }
+        Mutate(batch => { action(); batch.Add(JobCheckpoint.Save(job, eventKind)); });
     }
+    private void Mutate(Action<List<JobCheckpoint>> action)
+    {
+        using var lease = checkpoints.Reserve();
+        Task durable;
+        lock (gate)
+        {
+            var batch = new List<JobCheckpoint>(); action(batch);
+            durable = lease.Submit(batch); Changed();
+        }
+        durable.GetAwaiter().GetResult();
+    }
+    private JobRecord Snapshot(JobRecord job)
+    {
+        lock (gate) return System.Text.Json.JsonSerializer.Deserialize<JobRecord>(
+            System.Text.Json.JsonSerializer.Serialize(job, JobStore.JsonOptions), JobStore.JsonOptions)!;
+    }
+    private void DeleteJob(JobRecord job) => Mutate(batch => { jobs.Remove(job.Id); batch.Add(JobCheckpoint.Delete(job.Id)); });
     public async Task WaitForChangeAsync(long since, CancellationToken cancellationToken)
     {
         Task wait; lock (gate) { if (revision != since) return; wait = signal.Task; }
@@ -135,18 +166,33 @@ public sealed partial class JobEngine : BackgroundService, IApplicationView
         var scan = await ScanBoundedAsync(ct);
         var outputHealth = new[] { ("Proxy", options.Folders.Proxy), ("Work", options.Folders.Work), ("State", options.Folders.State) }
             .Select(p => PollFolder(p.Item1, p.Item2)).Concat(options.Destinations.Select(d => PollFolder("Destination " + d.Name, d.Path))).ToArray();
-        lock (gate)
+        var sourceHealth = new[] { ("Watch", options.Folders.Watch), ("Finished", options.Folders.Finished), ("Failed", options.Folders.Failed) }
+            .Select(p => PollFolder(p.Item1, p.Item2)).ToArray();
+        var snapshots = inventory.GetSnapshots().ToDictionary(s => s.Id);
+        foreach (var snapshot in snapshots.Values)
+            if (!inventoryIndexes.TryGetValue(snapshot.Id, out var cached) || !ReferenceEquals(cached.Paths, snapshot.Paths))
+                inventoryIndexes[snapshot.Id] = (snapshot.Paths, InventoryMatching.BuildIndex(snapshot));
+        var indexes = inventoryIndexes.ToDictionary(s => s.Key, s => s.Value.Index);
+        Mutate(batch =>
         {
-            folders = scan.Health.Concat(outputHealth).ToArray(); sourceSnapshotComplete = scan.Complete;
-            processingReady = scan.Complete && scan.Health.All(h => h.Readable && h.Writable) && outputHealth.Take(3).All(h => h.Readable && h.Writable) && mediaHealth.Ready;
-            scanError = scan.Complete ? null : "A source folder is inaccessible or its enumeration failed. Cleanup is paused.";
-            if (scan.Complete) Discover(scan.Files);
-            ApplyInventory(); Changed();
-        }
+            folders = scan.Health.Select(read =>
+            {
+                var write = sourceHealth.First(h => h.Id == read.Id);
+                return read with { Writable = write.Writable, WriteCheckedUtc = write.WriteCheckedUtc, FreeBytes = write.FreeBytes, Error = read.Error ?? write.Error };
+            }).Concat(outputHealth).ToArray(); sourceSnapshotComplete = scan.Complete;
+            processingReady = scan.Complete && folders.Take(6).All(h => h.Readable && h.Writable) && mediaHealth.Ready;
+            scanError = scan.Complete ? null : "A source folder is inaccessible or its enumeration is pending/failed. Cleanup is paused.";
+            if (scan.Complete) Discover(scan.Files, batch);
+            ApplyInventory(snapshots, indexes, batch);
+        });
+        RefreshCacheMetrics();
+        if (DateTimeOffset.UtcNow >= nextHousekeeping)
+        { store.PruneStatistics(); Volatile.Write(ref statistics, store.Statistics()); nextHousekeeping = DateTimeOffset.UtcNow.AddSeconds(60); }
         if (!scan.Complete) return;
         await RetireAbsentAsync(scan.Files, ct);
-        foreach (var job in jobs.Values.ToArray().Where(j => j.Managed && !j.Retiring && !running.ContainsKey(j.Id) &&
-                     (j.DeliveryCompleted || j.TerminalFailure) && j.CacheState != "Released")) ReleaseDeliveryCache(job);
+        JobRecord[] current; lock (gate) current = jobs.Values.ToArray();
+        foreach (var job in current.Where(j => j.Managed && !j.Retiring && !running.ContainsKey(j.Id) &&
+                     (j.DeliveryCompleted || j.TerminalFailure) && j.CacheState != CacheLifecycle.Released)) ReleaseDeliveryCache(job);
         if (!IsReady) return;
         List<JobRecord> eligible;
         lock (gate) eligible = jobs.Values.Where(j => !j.Retiring && j.Managed && j.AbsentScans == 0 &&
@@ -172,14 +218,16 @@ public sealed partial class JobEngine : BackgroundService, IApplicationView
     {
         try { await ProcessAsync(job, cancellation.Token); }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
+        catch (CheckpointException ex) { logger.LogError(ex, "Processing paused for {Job}: state is unavailable", job.Id); }
         catch (Exception ex)
         {
             logger.LogError(ex, "Unexpected job error {Job}", job.Id);
-            Update(job, () => { job.Error = ex.Message; job.Stage = JobStage.MoveFailed; job.TerminalFailure = true; });
+            SetJobError(job, ex);
+            Update(job, () => { job.Stage = JobStage.Failed; job.TerminalFailure = true; });
         }
         finally { running.TryRemove(job.Id, out _); cancellation.Dispose(); completion.TrySetResult(); wakeEngine?.Invoke(); }
     }
-    private void Discover(IReadOnlyList<SourceFile> files)
+    private void Discover(IReadOnlyList<SourceFile> files, List<JobCheckpoint> batch)
     {
         foreach (var f in files)
         {
@@ -192,14 +240,14 @@ public sealed partial class JobEngine : BackgroundService, IApplicationView
                 string.Equals(j.SourcePath, f.Path, StringComparison.OrdinalIgnoreCase));
             if (existing is not null)
             {
-                RefreshSource(existing, f); existing.StableSinceUtc = DateTimeOffset.UtcNow; store.Save(existing);
+                RefreshSource(existing, f); existing.StableSinceUtc = DateTimeOffset.UtcNow; batch.Add(JobCheckpoint.Save(existing));
                 continue;
             }
             // Interrupted archive move: ownership follows its committed target without re-ingestion.
             existing = jobs.Values.FirstOrDefault(j => !j.Retiring && string.Equals(j.MoveTarget, f.Path, StringComparison.OrdinalIgnoreCase) && j.SourceSize == f.Size &&
                 !files.Any(source => SameSourceGeneration(j, source)));
             if (existing is not null)
-            { RefreshSource(existing, f); existing.Archived = f.Location == SourceLocation.Finished; existing.MoveTarget = null; existing.MoveLocation = null; store.Save(existing); continue; }
+            { RefreshSource(existing, f); existing.Archived = f.Location == SourceLocation.Finished; existing.MoveTarget = null; existing.MoveLocation = null; batch.Add(JobCheckpoint.Save(existing)); continue; }
             // Publication may have committed just before a cross-volume move crashed.
             // Keep its target reserved while the original still exists, so the worker
             // can verify both copies and finish the existing move instead of ingesting it.
@@ -207,11 +255,18 @@ public sealed partial class JobEngine : BackgroundService, IApplicationView
                 files.Any(source => SameSourceGeneration(j, source)))) continue;
             // Our archive move may finish after Watch was enumerated. Its stale
             // path is not another arrival; this never authorizes retirement.
-            if (!File.Exists(f.Path)) continue;
+            if (jobs.Values.Any(j => j.Location != SourceLocation.Watch && j.WatchedSource is { } original &&
+                string.Equals(original.Path, f.Path, StringComparison.OrdinalIgnoreCase) && original.Size == f.Size &&
+                original.WriteUtc == f.WriteUtc && original.CreatedUtc == f.CreatedUtc)) continue;
             var j = new JobRecord { OriginalName = Path.GetFileName(f.Path), ClipName = Path.GetFileNameWithoutExtension(f.Path), SourcePath = f.Path, Location = f.Location, SourceSize = f.Size, SourceWriteUtc = f.WriteUtc, SourceCreatedUtc = f.CreatedUtc,
-                Managed = f.Location == SourceLocation.Watch, Stage = f.Location == SourceLocation.Watch ? JobStage.Waiting : JobStage.Existing, ProxyStatus = f.Location == SourceLocation.Watch ? "Pending" : "Untracked",
+                Managed = f.Location == SourceLocation.Watch, Stage = f.Location == SourceLocation.Watch ? JobStage.Waiting : JobStage.Existing, ProxyStatus = f.Location == SourceLocation.Watch ? ProxyState.Pending : ProxyState.Untracked,
                 Destinations = options.Destinations.Select(d => new DestinationRecord { Id = d.Id }).ToList() };
-            jobs[j.Id] = j; store.Save(j);
+            if (j.Location == SourceLocation.Watch)
+            {
+                j.WatchedSource = new(f.Path, f.Size, f.WriteUtc, f.CreatedUtc);
+                j.WaitCode = SourceWaitCode.Stability; j.WaitReason = "Waiting for stable source size/mtime"; j.WaitSinceUtc = j.FirstSeenUtc;
+            }
+            jobs[j.Id] = j; batch.Add(JobCheckpoint.Save(j));
         }
     }
     private static bool SameSourceGeneration(JobRecord job, SourceFile file) =>
@@ -222,84 +277,28 @@ public sealed partial class JobEngine : BackgroundService, IApplicationView
     {
         job.SourcePath = source.Path; job.Location = source.Location; job.SourceSize = source.Size;
         job.SourceWriteUtc = source.WriteUtc; job.SourceCreatedUtc = source.CreatedUtc;
+        if (source.Location == SourceLocation.Watch) job.WatchedSource = new(source.Path, source.Size, source.WriteUtc, source.CreatedUtc);
     }
 
-    private static void RefreshMovedSource(JobRecord job, string target, SourceLocation location)
+    private void CompleteMove(JobRecord job, string target, SourceLocation location, Action finish)
     {
         var file = new FileInfo(target); file.Refresh();
         if (!file.Exists) throw new IOException("Moved source is no longer available.");
-        RefreshSource(job, new(file.FullName, location, file.Length, file.LastWriteTimeUtc, file.CreationTimeUtc));
-    }
-
-    private sealed class HealthProbe<T> where T : class
-    {
-        public Task<(T Value, DateTimeOffset Completed)>? Task;
-        public DateTimeOffset Started;
-        public DateTimeOffset NextCheck;
-        public T? Value;
-    }
-
-    private static T PollHealth<T>(HealthProbe<T> state, Func<Task<T>> action, Func<string, T> unavailable) where T : class
-    {
-        var now = DateTimeOffset.UtcNow;
-        if (state.Task?.IsCompleted == true)
-        {
-            try
-            {
-                var completed = state.Task.GetAwaiter().GetResult();
-                state.Value = completed.Completed - state.Started <= TimeSpan.FromSeconds(2)
-                    ? completed.Value : unavailable("Health check exceeded its two-second budget.");
-            }
-            catch (Exception ex) { state.Value = unavailable(ex.Message); }
-            state.Task = null; state.NextCheck = now.AddSeconds(60);
-        }
-        if (state.Task is null && now >= state.NextCheck)
-        {
-            state.Started = now;
-            state.Task = Task.Run(async () => (await action(), DateTimeOffset.UtcNow));
-        }
-        if (state.Task is not null && now - state.Started > TimeSpan.FromSeconds(2))
-            return unavailable("Health check timed out; waiting for the existing check to finish.");
-        return state.Value ?? unavailable("Health check pending.");
-    }
-
-    private FolderHealth PollFolder(string id, string path)
-    {
-        if (!folderProbes.TryGetValue(path, out var state)) folderProbes[path] = state = new();
-        return PollHealth(state, () => Task.FromResult(probeFolder(id, path, true)),
-            error => new FolderHealth(id, path, false, false, null, error));
-    }
-
-    private async Task<FolderScan> ScanBoundedAsync(CancellationToken ct)
-    {
-        // Never launch a second filesystem enumeration while a timed-out OS/SMB call
-        // is still running. Late snapshots are discarded instead of authorizing cleanup.
-        if (sourceScanTask?.IsCompleted == true && DateTimeOffset.UtcNow - sourceScanStarted > TimeSpan.FromSeconds(2)) sourceScanTask = null;
-        if (sourceScanTask is null)
-        { sourceScanStarted = DateTimeOffset.UtcNow; sourceScanTask = Task.Run(scanSources); }
-        try
-        {
-            var result = await sourceScanTask.WaitAsync(TimeSpan.FromSeconds(2), ct);
-            sourceScanTask = null;
-            return result;
-        }
-        catch (TimeoutException)
-        {
-            return new(false, [], new[] { ("Watch", options.Folders.Watch), ("Finished", options.Folders.Finished), ("Failed", options.Folders.Failed) }
-                .Select(p => new FolderHealth(p.Item1, p.Item2, false, false, null, "Source scan timed out; cleanup paused until a fresh complete scan succeeds.")).ToArray());
-        }
+        var source = new SourceFile(file.FullName, location, file.Length, file.LastWriteTimeUtc, file.CreationTimeUtc);
+        Update(job, () => { RefreshSource(job, source); finish(); });
     }
 
     public override void Dispose()
     {
+        if (Interlocked.Exchange(ref disposed, 1) != 0) return;
         healthLifetime.Cancel(); healthLifetime.Dispose();
-        foreach (var item in running.Values.Concat(proxyRunning.Values)) item.Cancellation.Cancel();
-        cache.Dispose();
+        foreach (var item in running.Values.Concat(proxyRunning.Values))
+            try { item.Cancellation.Cancel(); } catch (ObjectDisposedException) { }
+        checkpoints.Dispose(); cache.Dispose();
         base.Dispose();
     }
-    private void ApplyInventory()
+    private void ApplyInventory(IReadOnlyDictionary<string, InventorySnapshot> snapshots, IReadOnlyDictionary<string, HashSet<string>> indexes, List<JobCheckpoint> batch)
     {
-        var snapshots = inventory.GetSnapshots().ToDictionary(s => s.Id);
         foreach (var j in jobs.Values.Where(j => !j.Retiring))
         {
             var changed = false;
@@ -310,7 +309,7 @@ public sealed partial class JobEngine : BackgroundService, IApplicationView
                 var next = Availability.Unknown;
                 if (snapshots.TryGetValue(dest.Id, out var s) && s.Ready)
                 {
-                    if (InventoryMatching.Contains(s, dest.InventoryFolder, j.ClipName))
+                    if (indexes[dest.Id].Contains(InventoryMatching.Key(dest.InventoryFolder, j.ClipName)))
                     {
                         next = Availability.OK;
                         if (!d.SeenOnline) { d.SeenOnline = true; changed = true; }
@@ -322,7 +321,7 @@ public sealed partial class JobEngine : BackgroundService, IApplicationView
                 }
                 if (next != d.Availability) { d.Availability = next; changed = true; }
             }
-            if (changed) store.Save(j);
+            if (changed) batch.Add(JobCheckpoint.Save(j));
         }
     }
 }

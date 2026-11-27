@@ -16,12 +16,18 @@ public sealed partial class JobEngine
             if (job.TerminalFailure) { await MoveFailedAsync(job, ct); return; }
             var needsDelivery = job.Destinations.Any(d => d.CopyStatus is CopyState.NotAttempted or CopyState.InProgress);
             if (job.Wrapped && needsDelivery && (job.ArtifactPath is null || !File.Exists(job.ArtifactPath)))
-                Update(job, () => { job.Wrapped = false; job.CacheState = "Lost"; });
+                Update(job, () => { job.Wrapped = false; job.CacheState = CacheLifecycle.Lost; });
             if (!job.Wrapped)
             {
                 FileStream sourceGuard;
                 try { sourceGuard = new(job.SourcePath, FileMode.Open, FileAccess.Read, FileShare.Read); }
-                catch (IOException) { return; }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    var sharing = ex is IOException && (ex.HResult & 0xffff) is 32 or 33;
+                    WaitForSource(job, sharing ? SourceWaitCode.SharingViolation : SourceWaitCode.SourceBlocked,
+                        sharing ? "Source is still open for writing; waiting for the producer" : "Source blocked: " + Media.DiagnosticText.Summary(ex.Message));
+                    return;
+                }
                 await using (sourceGuard)
                 {
                     if (!SourceMatches(job)) return;
@@ -30,26 +36,33 @@ public sealed partial class JobEngine
                     if (!job.Archived && File.Exists(finishedPath) || File.Exists(proxyPath) && store.Owner(proxyPath) != job.Id)
                         throw new IOException("Name conflict: an archived source or local output already exists. Nothing was overwritten.");
                     if (!store.Claim(proxyPath, job.Id, "proxy")) throw new IOException("Name conflict: output reserved by another source generation.");
-                    Update(job, () => { job.ProxyPath = proxyPath; job.Stage = JobStage.Queued; job.Error = null; });
+                    Update(job, () => { if (job.WaitCode != SourceWaitCode.CacheCapacity) ClearWait(job); job.ProxyPath = proxyPath; job.Stage = JobStage.Queued; job.Error = null; });
                     await using (var probing = await AcquireAsync(nativeSlots, "native", ct))
                     {
                         if (job.Inspection is null)
                         {
-                            Update(job, () => { job.Stage = JobStage.Probing; job.HiresPhase = "Probing"; });
+                            Update(job, () => { job.Stage = JobStage.Probing; job.HiresPhase = HiresState.Probing; });
                             var inspection = await MeasureAsync(job, "probe", () => media.InspectAsync(job.SourcePath, ct));
                             Update(job, () => { job.Inspection = inspection; job.MediaSummary = inspection.Summary; job.Mode = inspection.Native ? "Native" : "Transcoded"; });
                         }
                         if (!job.Inspection!.Native && !options.Media.AllowNormalization)
                             throw new MediaMismatchException("Format mismatch: incoming normalization is disabled.");
                         bool reserved;
-                        lock (gate) { reserved = cache.Reserve(job, jobs.Values); store.Save(job); Changed(); }
-                        if (!reserved) { Update(job, () => { job.Stage = JobStage.Queued; job.HiresPhase = "Waiting for cache"; }); return; }
+                        await cacheGate.WaitAsync(ct);
+                        try
+                        {
+                            JobRecord[] all; lock (gate) all = jobs.Values.Select(Snapshot).ToArray();
+                            var candidate = Snapshot(job); reserved = cache.Reserve(candidate, all);
+                            Update(job, () => { if (reserved) ClearWait(job); job.CacheReservationBytes = candidate.CacheReservationBytes; job.CacheState = candidate.CacheState; job.CacheWaitReason = candidate.CacheWaitReason; });
+                        }
+                        finally { cacheGate.Release(); }
+                        if (!reserved) { WaitForSource(job, SourceWaitCode.CacheCapacity, job.CacheWaitReason!); Update(job, () => { job.Stage = JobStage.Queued; job.HiresPhase = HiresState.WaitingForCache; }); return; }
                         RemoveOwnedPartials(job);
-                        ClearLegacyWork(job);
-                        cache.Prepare(job);
+                        var preparedCache = Snapshot(job); cache.Prepare(preparedCache);
+                        Update(job, () => job.WorkPath = preparedCache.WorkPath);
                         var clip = Path.Combine(job.WorkPath!, "delivery.clip");
                         if (!store.Claim(clip, job.Id, "clip")) throw new IOException("Cache output ownership conflict.");
-                        Update(job, () => { job.ArtifactPath = clip; job.ArtifactUuid = Guid.Parse(job.Id).ToString("D"); });
+                        Update(job, () => { job.ArtifactPath = clip; });
                         RemoveOwnedPartials(job);
                         cache.DeleteEssence(job);
                         if (File.Exists(clip))
@@ -59,7 +72,7 @@ public sealed partial class JobEngine
                             var sha = await FileOperations.HashAsync(clip, ct);
                             var recordProcessed = !job.ProcessedCheckpoint;
                             Update(job, () => { job.ExpectedFrameCount = info.FrameCount; job.ArtifactSha256 = sha; job.HeaderSha256 = null; job.PayloadSha256 = null;
-                                job.Wrapped = true; job.ProcessedCheckpoint = true; job.CacheState = "Ready"; }, eventKind: recordProcessed ? "processed" : null);
+                                job.Wrapped = true; job.ProcessedCheckpoint = true; job.CacheState = CacheLifecycle.Ready; }, eventKind: recordProcessed ? "processed" : null);
                         }
                         else if (job.Inspection.Native) await WrapSourceAsync(job, ct);
                     }
@@ -85,21 +98,29 @@ public sealed partial class JobEngine
                 if (!SourceMatches(job)) throw new SourceGenerationChangedException();
                 var target = Path.Combine(options.Folders.Finished, job.OriginalName);
                 var resume = job.MoveLocation == SourceLocation.Finished && string.Equals(job.MoveTarget, target, StringComparison.OrdinalIgnoreCase);
-                Update(job, () => { job.Stage = JobStage.Archiving; job.HiresPhase = "Archiving"; job.MoveTarget = target; job.MoveLocation = SourceLocation.Finished; });
+                Update(job, () => { job.Stage = JobStage.Archiving; job.HiresPhase = HiresState.Archiving; job.MoveTarget = target; job.MoveLocation = SourceLocation.Finished; });
                 await MeasureAsync(job, "archive", () => FileOperations.MoveVerifiedAsync(job.SourcePath, target, job.Id, ct, resume));
-                Update(job, () => { RefreshMovedSource(job, target, SourceLocation.Finished); job.Archived = true; job.MoveTarget = null; job.MoveLocation = null; });
+                CompleteMove(job, target, SourceLocation.Finished, () => { ClearWait(job); job.Archived = true; job.MoveTarget = null; job.MoveLocation = null; });
             }
             await DeliverOutputsAsync(job, ct);
             ReleaseDeliveryCache(job);
-            Update(job, () => { job.HiresPhase = "Complete"; job.Stage = job.ProxyStatus is "Ready" or "Failed" ? JobStage.Done : JobStage.Proxy; job.ProxyReadyUtc ??= DateTimeOffset.UtcNow; job.Progress = null; });
+            Update(job, () => { job.HiresPhase = HiresState.Complete; job.Stage = job.ProxyStatus is ProxyState.Ready or ProxyState.Failed ? JobStage.Done : JobStage.Proxy; job.ProxyEligibleUtc ??= DateTimeOffset.UtcNow; job.Progress = null; });
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (CheckpointException) { throw; }
         catch (SourceGenerationChangedException ex)
-        { Update(job, () => { job.Error = ex.Message; job.TerminalFailure = true; job.Stage = JobStage.MoveFailed; job.HiresPhase = "Failed"; job.Progress = null; }); }
+        { SetJobError(job, ex); Update(job, () => { ClearWait(job); job.TerminalFailure = true; job.Stage = JobStage.Failed; job.HiresPhase = HiresState.Failed; job.Progress = null; }); }
+        catch (Exception ex) when (job.Stage == JobStage.Archiving && (ex is IOException or UnauthorizedAccessException))
+        {
+            SetJobError(job, ex);
+            WaitForSource(job, SourceWaitCode.SourceBlocked, "Could not archive source: " + DiagnosticText.Summary(ex.Message));
+            Update(job, () => job.Stage = JobStage.MoveFailed);
+        }
         catch (Exception ex)
         {
             if (job.Retiring) return;
-            Update(job, () => { job.Error = ex.Message; job.TerminalFailure = true; job.HiresPhase = "Failed"; job.Progress = null; }, eventKind: "processingFailure");
+            SetJobError(job, ex);
+            Update(job, () => { ClearWait(job); job.TerminalFailure = true; job.HiresPhase = HiresState.Failed; job.Progress = null; }, eventKind: "processingFailure");
             if (!job.Archived) await MoveFailedAsync(job, ct);
             else Update(job, () => job.Stage = JobStage.Failed);
             ReleaseDeliveryCache(job);
@@ -110,7 +131,7 @@ public sealed partial class JobEngine
 
     private async Task WrapSourceAsync(JobRecord job, CancellationToken ct)
     {
-        Update(job, () => { job.Stage = job.Inspection!.Native ? JobStage.Wrapping : JobStage.Transcoding; job.HiresPhase = job.Stage.ToString(); job.CacheState = "Working"; });
+        Update(job, () => { job.Stage = job.Inspection!.Native ? JobStage.Wrapping : JobStage.Transcoding; job.HiresPhase = job.Inspection!.Native ? HiresState.Wrapping : HiresState.Transcoding; job.CacheState = CacheLifecycle.Working; });
         using var quota = CancellationTokenSource.CreateLinkedTokenSource(ct);
         var operation = MeasureAsync(job, "wrap", () => media.WrapSourceAsync(job.SourcePath, job.Inspection!, job.WorkPath!, job.ArtifactPath!, job.Id, p => Progress(job, p), quota.Token));
         try
@@ -131,8 +152,8 @@ public sealed partial class JobEngine
             var artifact = wrapped.Artifact;
             var recordProcessed = !job.ProcessedCheckpoint;
             Update(job, () => { job.ArtifactSha256 = string.IsNullOrEmpty(artifact.Sha256) ? null : artifact.Sha256; job.HeaderSha256 = artifact.HeaderSha256;
-                job.PayloadSha256 = artifact.PayloadSha256; job.ArtifactUuid = artifact.Uuid; job.ExpectedFrameCount = wrapped.FrameCount;
-                job.Wrapped = true; job.ProcessedCheckpoint = true; job.CacheState = "Ready"; }, eventKind: recordProcessed ? "processed" : null);
+                job.PayloadSha256 = artifact.PayloadSha256; job.ExpectedFrameCount = wrapped.FrameCount;
+                job.Wrapped = true; job.ProcessedCheckpoint = true; job.CacheState = CacheLifecycle.Ready; }, eventKind: recordProcessed ? "processed" : null);
             try { cache.DeleteEssence(job); }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { Update(job, () => job.CacheError = ex.Message); }
         }

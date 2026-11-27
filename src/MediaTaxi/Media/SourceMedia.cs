@@ -17,7 +17,7 @@ public sealed partial class MediaService
         if (!probe.Native)
         {
             var prepared = await PrepareInspectedAsync(source, probe, work, progress, ct);
-            return new(await WrapAsync(prepared, output, id, ct), prepared.FrameCount);
+            return new(await FlatClip.WriteAsync(prepared, output, id, ct), prepared.FrameCount);
         }
         Directory.CreateDirectory(work);
         var audio = Path.Combine(work, "audio.wav");

@@ -44,7 +44,7 @@ public sealed class WorkCache : IDisposable
             job.CacheWaitReason = "Waiting for cache capacity/free-space reserve. Check /admin cache usage and C: free space.";
             return false;
         }
-        job.CacheReservationBytes = estimate; job.CacheOwner = Owner; job.CacheState = "Reserved"; job.CacheWaitReason = null;
+        job.CacheReservationBytes = estimate; job.CacheState = CacheLifecycle.Reserved; job.CacheWaitReason = null;
         return true;
     }
     public void Prepare(JobRecord job)
@@ -63,36 +63,58 @@ public sealed class WorkCache : IDisposable
     {
         try
         {
-            if (job.WorkPath is not null && Directory.Exists(job.WorkPath))
+            // Unknown/inaccessible storage is never evidence that owned bytes were deleted.
+            RejectLink(options.Folders.Work);
+            _ = Directory.EnumerateFileSystemEntries(options.Folders.Work).Take(1).ToArray();
+            var present = false;
+            if (job.WorkPath is not null)
             {
-                Verify(job, job.WorkPath);
+                if (!Guid.TryParseExact(job.Id, "N", out _) || !string.Equals(Path.GetFullPath(job.WorkPath), DirectoryFor(job), StringComparison.OrdinalIgnoreCase))
+                    throw new IOException("Cache generation/path ownership mismatch; retained files.");
+                try { RejectLink(Path.GetDirectoryName(job.WorkPath)!); }
+                catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException) { }
+                try
+                {
+                    if (!File.GetAttributes(job.WorkPath).HasFlag(FileAttributes.Directory)) throw new IOException("Cache path is no longer a directory; retained it.");
+                    present = true;
+                }
+                catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException) { }
+            }
+            if (present)
+            {
+                Verify(job, job.WorkPath!);
                 // A single level only. A link or unexpected subdirectory is never followed.
-                foreach (var file in Directory.EnumerateFileSystemEntries(job.WorkPath))
+                foreach (var file in Directory.EnumerateFileSystemEntries(job.WorkPath!))
                 {
                     RejectLink(file);
-                    if (Directory.Exists(file)) throw new IOException("Unexpected cache subdirectory; cleanup retained it.");
+                    var name = Path.GetFileName(file);
+                    if (Directory.Exists(file) || name is not (".owner" or "video.h264" or "audio.wav" or "delivery.clip") &&
+                        name != "delivery.clip." + job.Id + ".partial")
+                        throw new IOException("Untracked cache entry; cleanup retained it: " + name);
+                    if (name == "delivery.clip" && !FileOperations.ClipOwned(file, job.Id))
+                        throw new IOException("Cache clip ownership mismatch; retained it.");
                 }
-                foreach (var file in Directory.EnumerateFiles(job.WorkPath).Where(p => Path.GetFileName(p) != ".owner")) File.Delete(file);
-                File.Delete(Path.Combine(job.WorkPath, ".owner"));
-                try { Directory.Delete(job.WorkPath); }
+                foreach (var file in Directory.EnumerateFiles(job.WorkPath!).Where(p => Path.GetFileName(p) != ".owner")) File.Delete(file);
+                File.Delete(Path.Combine(job.WorkPath!, ".owner"));
+                try { Directory.Delete(job.WorkPath!); }
                 catch
                 {
                     // Keep deletion retryable if the directory itself is held open.
-                    if (Directory.Exists(job.WorkPath) && !File.Exists(Path.Combine(job.WorkPath, ".owner")))
-                        File.WriteAllText(Path.Combine(job.WorkPath, ".owner"), Owner + ":" + job.Id);
+                    if (Directory.Exists(job.WorkPath) && !File.Exists(Path.Combine(job.WorkPath!, ".owner")))
+                        File.WriteAllText(Path.Combine(job.WorkPath!, ".owner"), Owner + ":" + job.Id);
                     throw;
                 }
             }
-            job.CacheReservationBytes = 0; job.CacheState = "Released"; job.CacheError = null; error = null; return true;
+            job.CacheReservationBytes = 0; job.CacheState = CacheLifecycle.Released; job.CacheError = null; error = null; return true;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        { error = ex.Message; job.CacheState = "Cleanup pending"; job.CacheError = error; return false; }
+        { error = ex.Message; job.CacheState = CacheLifecycle.CleanupPending; job.CacheError = error; return false; }
     }
     public void DeleteEssence(JobRecord job)
     {
         if (job.WorkPath is null || !Directory.Exists(job.WorkPath)) return;
         Verify(job, job.WorkPath);
-        foreach (var name in new[] { "video.h264", "audio.wav", "proxy-video.h264", "proxy-audio.wav" })
+        foreach (var name in new[] { "video.h264", "audio.wav" })
         {
             var path = Path.Combine(job.WorkPath, name);
             if (File.Exists(path)) { RejectLink(path); File.Delete(path); }

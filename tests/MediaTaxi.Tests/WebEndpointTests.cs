@@ -36,6 +36,9 @@ public sealed class WebEndpointTests
         Assert.Equal(HttpStatusCode.OK, (await host.Client.GetAsync("/health/ready")).StatusCode);
         Assert.Equal(HttpStatusCode.MethodNotAllowed, (await host.Client.PostAsync("/api/jobs", null)).StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, (await host.Client.GetAsync("/api/resync")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await host.Client.GetAsync("/api/jobs/retired")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await host.Client.GetAsync("/api/jobs/present")).StatusCode);
+        Assert.Equal(HttpStatusCode.MethodNotAllowed, (await host.Client.PostAsync("/api/jobs/present", null)).StatusCode);
 
         using var statistics = await host.Client.GetFromJsonAsync<JsonDocument>("/api/statistics");
         Assert.Equal(3, statistics!.RootElement.GetProperty("imported").GetInt32());
@@ -125,6 +128,8 @@ public sealed class WebEndpointTests
             LastView = view;
             return new(Revision, "Asia/Jerusalem", 0, 1, []);
         }
+        public JobDetail? GetJob(string id) => id == "present"
+            ? new(new(id, "clip.mxf", "clip", DateTimeOffset.UtcNow, "Finished", "Done", null, "Native", "AVC-Intra", null, "Ready", []), "finished/clip.mxf", null, null, null) : null;
         public SystemSnapshot GetSystem() => new("0.2.0", 60, Ready, null, [], new(true, "ffmpeg test", "ffprobe test", ["libx264"], null), [], new Dictionary<string, int>(), 0, [], [], new Dictionary<string, int> { ["Wrapping"] = 2, ["Proxy"] = 1 });
         public StatisticsSnapshot GetStatistics() => new(5, 4, 1, 3, 2, 1, 0, 1, 5);
         public Task WaitForChangeAsync(long since, CancellationToken cancellationToken) => since != Revision ? Task.CompletedTask : change.Task.WaitAsync(cancellationToken);

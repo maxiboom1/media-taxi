@@ -8,11 +8,15 @@ public static class InventoryMatching
     public static bool Contains(InventorySnapshot snapshot, string inventoryFolder, string clipName)
     {
         if (!snapshot.Ready) return false;
-        string folder = inventoryFolder.Replace('\\', '/').Trim('/');
-        string name = StripClipExtension(clipName.Replace('\\', '/'));
-        string expected = folder.Length == 0 ? name : folder + "/" + name;
-        return snapshot.Paths.Any(path => string.Equals(
-            StripClipExtension(path.Replace('\\', '/').Trim('/')), expected, StringComparison.OrdinalIgnoreCase));
+        return BuildIndex(snapshot).Contains(Key(inventoryFolder, clipName));
+    }
+    public static HashSet<string> BuildIndex(InventorySnapshot snapshot) => snapshot.Paths
+        .Select(path => StripClipExtension(path.Replace('\\', '/').Trim('/'))).ToHashSet(StringComparer.OrdinalIgnoreCase);
+    public static string Key(string folder, string clipName)
+    {
+        folder = folder.Replace('\\', '/').Trim('/');
+        var name = StripClipExtension(clipName.Replace('\\', '/'));
+        return folder.Length == 0 ? name : folder + "/" + name;
     }
 
     private static string StripClipExtension(string value) => value.EndsWith(".clip", StringComparison.OrdinalIgnoreCase) ? value[..^5] : value;

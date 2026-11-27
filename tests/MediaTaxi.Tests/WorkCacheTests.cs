@@ -8,7 +8,7 @@ namespace MediaTaxi.Tests;
 public sealed class WorkCacheTests
 {
     [Fact]
-    public void CapacityWaitQuotaReleaseAndLockedCleanupKeepReservationsHonest()
+    public async Task CapacityWaitQuotaReleaseAndLockedCleanupKeepReservationsHonest()
     {
         using var temp = new TemporaryFolder();
         var options = new TaxiOptions { Folders = new() { Work = Path.Combine(temp.Path, "cache"), State = Path.Combine(temp.Path, "state") }, Cache = new() { MaxGiB = .05, MinFreeGiB = 0 } };
@@ -17,11 +17,11 @@ public sealed class WorkCacheTests
         var first = new JobRecord(); var second = new JobRecord();
         Assert.True(cache.Reserve(first, [first, second])); cache.Prepare(first);
         Assert.False(cache.Reserve(second, [first, second])); Assert.Contains("capacity", second.CacheWaitReason);
-        var clip = Path.Combine(first.WorkPath!, "delivery.clip"); File.WriteAllText(clip, "temporary");
+        var clip = Path.Combine(first.WorkPath!, "delivery.clip"); await RecoveryMedia.WriteClipAsync(clip, first.Id);
         using (var held = File.Open(clip, FileMode.Open, FileAccess.Read, FileShare.Read))
         {
             Assert.False(cache.Release(first, out var error)); Assert.NotNull(error);
-            Assert.True(first.CacheReservationBytes > 0); Assert.Equal("Cleanup pending", first.CacheState);
+            Assert.True(first.CacheReservationBytes > 0); Assert.Equal(CacheLifecycle.CleanupPending, first.CacheState);
         }
         Assert.True(cache.Release(first, out _)); Assert.Equal(0, first.CacheReservationBytes);
         Assert.True(cache.Reserve(second, [first, second]));

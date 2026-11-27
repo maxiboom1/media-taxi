@@ -35,7 +35,7 @@ public sealed class MediaLayoutTests : IDisposable
         Assert.Equal(Guid.Parse(job).ToString("D"), info.Uuid);
         Assert.Equal(32768 + 2L * (569344 + 32768), new FileInfo(output).Length);
         Assert.Equal(Convert.ToHexString(SHA256.HashData(await File.ReadAllBytesAsync(output))).ToLowerInvariant(), artifact.Sha256);
-        var extracted = await FlatClip.ExtractAsync(output, Path.Combine(directory, "extracted"), CancellationToken.None);
+        var extracted = await ClipTestSupport.ExtractAsync(output, Path.Combine(directory, "extracted"), CancellationToken.None);
         Assert.Equal(frames, await File.ReadAllBytesAsync(extracted.VideoPath));
         var wave = PcmWave.ReadInfo(extracted.AudioPath);
         using var stream = File.OpenRead(extracted.AudioPath); stream.Position = wave.DataOffset;
@@ -52,7 +52,7 @@ public sealed class MediaLayoutTests : IDisposable
             BinaryPrimitives.WriteInt32LittleEndian(pcm.AsSpan(i * 8 + 4, 4), -i << 8);
         }
         var auk = new byte[32768]; PcmWave.PackRecord(pcm, 2, auk, 100);
-        var decoded = new byte[960 * 8 * 4]; PcmWave.InterleaveRecord(auk, decoded);
+        var decoded = new byte[960 * 8 * 4]; ClipTestSupport.InterleaveRecord(auk, decoded);
         for (var sample = 0; sample < 960; sample++)
         {
             Assert.Equal(sample << 8, BinaryPrimitives.ReadInt32LittleEndian(decoded.AsSpan(sample * 32, 4)));

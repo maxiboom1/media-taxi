@@ -26,6 +26,10 @@
         <div class="refresh"><span id="updated">Waiting for data</span><button class="text-button" id="refresh-button" type="button">Refresh</button></div>
       </div>
       <p class="panel-description" id="view-description">Last hour, plus unresolved files still in Watch.</p>
+      <div class="activity-controls">
+        <label for="search">Search clips <input id="search" type="search" placeholder="Name, format or status" autocomplete="off"></label>
+        <div class="pagination"><button id="previous-page" class="text-button" type="button">Previous</button><span id="page-label">Page 1</span><button id="next-page" class="text-button" type="button">Next</button></div>
+      </div>
       <div class="table-wrap" id="activity-panel" role="tabpanel" aria-labelledby="active-tab" tabindex="0">
         <table class="activity-table">
           <thead id="activity-head"><tr><th scope="col">Arrived</th><th scope="col">Clip</th><th scope="col">Input format</th><th scope="col">Processing</th><th scope="col">Proxy</th></tr></thead>
@@ -37,6 +41,7 @@
     </section>
     <div class="error-message hidden" id="page-error" role="alert"></div>
     <p class="legend"><span class="dot success"></span>OK <span class="dot failure"></span>Missing / failed <span class="dot warning"></span>Unknown / partial <span class="dot neutral"></span>Removed</p>
+    <dialog id="job-dialog" aria-labelledby="detail-title"><div class="section-heading"><h3 id="detail-title">Clip details</h3><button id="close-details" class="text-button" type="button">Close</button></div><pre id="detail-content"></pre></dialog>
   </main>
 </body>
 </html>

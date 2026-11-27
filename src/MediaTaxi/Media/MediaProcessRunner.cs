@@ -40,7 +40,7 @@ public sealed partial class MediaProcessRunner
             await process.WaitForExitAsync(timeout.Token);
             await Task.WhenAll(outTask, errorTask);
             if (process.ExitCode != 0)
-                throw new IOException($"{Path.GetFileName(executable)} exited {process.ExitCode}: {stderr.ToString().Trim()}");
+                throw new MediaProcessException(executable, process.ExitCode, stderr.ToString().Trim());
             return new ProcessResult(stdout.ToString(), stderr.ToString());
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
@@ -49,17 +49,39 @@ public sealed partial class MediaProcessRunner
         }
         finally
         {
-            if (!process.HasExited)
-            {
-                try { process.Kill(entireProcessTree: true); }
-                catch (InvalidOperationException) { }
-                catch (System.ComponentModel.Win32Exception) { }
-                try { await process.WaitForExitAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5)); }
-                catch (TimeoutException) { }
-            }
-            try { await Task.WhenAll(outTask, errorTask); }
-            catch (OperationCanceledException) { }
+            await FinishAsync(process, timeout, outTask, errorTask);
         }
+    }
+
+    private static async Task FinishAsync(Process process, CancellationTokenSource timeout, params Task[] drains)
+    {
+        if (!process.HasExited)
+        {
+            try { process.Kill(entireProcessTree: true); }
+            catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception) { }
+            try { await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5)); }
+            catch (TimeoutException) { }
+        }
+        await timeout.CancelAsync();
+        try { await Task.WhenAll(drains).WaitAsync(TimeSpan.FromSeconds(5)); }
+        catch (Exception ex) when (ex is OperationCanceledException or IOException or TimeoutException) { }
+    }
+    private static readonly HashSet<string> ProgressKeys = new(StringComparer.Ordinal)
+    {
+        "frame", "fps", "stream_0_0_q", "bitrate", "total_size", "out_time_us", "out_time_ms", "out_time",
+        "dup_frames", "drop_frames", "speed", "progress"
+    };
+    private static bool IsProgress(string line)
+    {
+        var equal = line.IndexOf('=');
+        if (equal <= 0 || !ProgressKeys.Contains(line[..equal])) return false;
+        var key = line[..equal]; var value = line[(equal + 1)..].Trim();
+        if (key == "progress") return value is "continue" or "end";
+        if (value == "N/A") return true;
+        if (key == "out_time") return TimeSpan.TryParse(value, CultureInfo.InvariantCulture, out _);
+        if (key == "speed") value = value.TrimEnd('x').Trim();
+        if (key == "bitrate") value = value.Replace("kbits/s", "", StringComparison.Ordinal).Trim();
+        return double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out _);
     }
 
     private static async Task DrainAsync(StreamReader reader, StringBuilder buffer, int limit,
@@ -68,6 +90,7 @@ public sealed partial class MediaProcessRunner
         while (await reader.ReadLineAsync(cancellationToken) is { } line)
         {
             observe?.Invoke(line);
+            if (IsProgress(line)) continue;
             buffer.AppendLine(line);
             if (buffer.Length > limit) buffer.Remove(0, buffer.Length - limit);
         }

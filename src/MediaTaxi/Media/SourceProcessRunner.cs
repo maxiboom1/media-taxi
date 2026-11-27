@@ -26,19 +26,13 @@ public sealed partial class MediaProcessRunner
         try
         {
             await child.Process.WaitForExitAsync(timeout.Token); await Task.WhenAll(output, error);
-            if (child.Process.ExitCode != 0) throw new IOException($"FFmpeg exited {child.Process.ExitCode}: {stderr}");
+            if (child.Process.ExitCode != 0) throw new MediaProcessException(executable, child.Process.ExitCode, stderr.ToString());
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         { throw new TimeoutException($"FFmpeg exceeded {timeoutSeconds} seconds."); }
         finally
         {
-            if (!child.Process.HasExited)
-            {
-                try { child.Process.Kill(true); } catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception) { }
-                await child.Process.WaitForExitAsync(CancellationToken.None);
-            }
-            await timeout.CancelAsync();
-            try { await Task.WhenAll(output, error); } catch (OperationCanceledException) { }
+            await FinishAsync(child.Process, timeout, output, error);
         }
     }
 }

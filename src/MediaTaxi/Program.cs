@@ -1,3 +1,4 @@
+using MediaTaxi;
 using MediaTaxi.Configuration;
 using MediaTaxi.Domain;
 using MediaTaxi.Engine;
@@ -5,9 +6,9 @@ using MediaTaxi.Inventory;
 using MediaTaxi.Media;
 using MediaTaxi.Storage;
 using MediaTaxi.Web;
-using System.Text.Json.Serialization;
+using MediaTaxi.Diagnostics;
 
-if (args.Contains("--version")) { Console.WriteLine("Media Taxi 0.3.1"); return; }
+if (args.Contains("--version")) { Console.WriteLine("Media Taxi " + AppVersion.Current); return; }
 var configIndex = Array.IndexOf(args, "--config");
 if (configIndex >= 0 && (configIndex + 1 >= args.Length || args[configIndex + 1].StartsWith("--", StringComparison.Ordinal)))
 { Console.Error.WriteLine("Configuration error: --config requires a path."); Environment.ExitCode = 2; return; }
@@ -23,18 +24,21 @@ builder.WebHost.UseUrls(options.Web.Listen);
 builder.Logging.SetMinimumLevel(Enum.Parse<LogLevel>(options.LogLevel, ignoreCase: true));
 builder.Logging.AddFilter("Microsoft.AspNetCore", LogLevel.Warning);
 builder.Services.Configure<Microsoft.Extensions.Hosting.HostOptions>(o => o.ShutdownTimeout = TimeSpan.FromSeconds(15));
-builder.Services.ConfigureHttpJsonOptions(o => o.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
+using var fileLog = new RollingFileLogger(options.FileLog);
+builder.Logging.AddProvider(fileLog);
+builder.Services.AddSingleton(fileLog);
 builder.Services.AddSingleton(options);
 builder.Services.AddSingleton(_ => new JobStore(options.Folders.State));
 builder.Services.AddSingleton<IMediaService, MediaService>();
 builder.Services.AddSingleton<InventoryService>();
 builder.Services.AddHostedService(p => p.GetRequiredService<InventoryService>());
-builder.Services.AddSingleton<JobEngine>();
+builder.Services.AddSingleton(p => new JobEngine(options, p.GetRequiredService<JobStore>(), p.GetRequiredService<IMediaService>(),
+    p.GetRequiredService<InventoryService>(), p.GetRequiredService<ILogger<JobEngine>>(), fileLog: fileLog));
 builder.Services.AddSingleton<IApplicationView>(p => p.GetRequiredService<JobEngine>());
 builder.Services.AddHostedService(p => p.GetRequiredService<JobEngine>());
 await using var app = builder.Build();
 DashboardEndpoints.Map(app, app.Services.GetRequiredService<IApplicationView>());
-app.Logger.LogInformation("Media Taxi 0.3.1 | Config: {Config} | Dashboard: {Listen}", options.ConfigPath, options.Web.Listen);
+app.Logger.LogInformation("Media Taxi {Version} | Config: {Config} | Dashboard: {Listen}", AppVersion.Current, options.ConfigPath, options.Web.Listen);
 await app.RunAsync();
 
 public partial class Program;

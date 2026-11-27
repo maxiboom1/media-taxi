@@ -22,7 +22,7 @@ public static class FlatClip
         var temporary = outputPath + "." + Guid.Parse(jobId).ToString("N") + ".partial";
         if (File.Exists(outputPath)) throw new IOException($"Output already exists: {outputPath}");
         var audio = PcmWave.ReadInfo(media.AudioPath);
-        if (audio.Samples != checked(media.FrameCount * 960)) throw new MediaMismatchException("Audio/video duration mismatch");
+        if (audio.Samples != checked(media.FrameCount * 960)) throw new MediaMismatchException($"Audio/video duration mismatch: expected {media.FrameCount * 960} PCM samples, got {audio.Samples}; delta {audio.Samples - media.FrameCount * 960} samples (strict matching)");
         if (new FileInfo(media.VideoPath).Length != checked(media.FrameCount * AvciValidator.FrameBytes))
             throw new MediaMismatchException("Video length changed after preparation");
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outputPath))!);
@@ -142,45 +142,6 @@ public static class FlatClip
         if (tc is < 0 or >= 4_320_000 || (string?)root.Element("Striped_TC_DF") is not (null or "ndf"))
             throw new MediaMismatchException("Unsupported clip timecode value or drop-frame flag");
         return new FlatClipInfo(Guid.Parse((string?)root.Element("UUID") ?? "").ToString("D"), frames, video.Offset, audioOffset, tracks.Length == 2, tc);
-    }
-
-    public static async Task<PreparedMedia> ExtractAsync(string path, string workDirectory, CancellationToken cancellationToken)
-    {
-        var info = await ReadInfoAsync(path, cancellationToken);
-        Directory.CreateDirectory(workDirectory);
-        var videoPath = Path.Combine(workDirectory, "proxy-video.h264");
-        var audioPath = Path.Combine(workDirectory, "proxy-audio.wav");
-        var record = ArrayPool<byte>.Shared.Rent(VideoStride);
-        var pcm = new byte[960 * 8 * 4];
-        try
-        {
-            await using var source = File.OpenRead(path);
-            await using (var video = new FileStream(videoPath, FileMode.CreateNew, FileAccess.Write))
-            {
-                source.Position = info.VideoOffset;
-                for (long frame = 0; frame < info.FrameCount; frame++)
-                {
-                    await source.ReadExactlyAsync(record.AsMemory(0, VideoStride), cancellationToken);
-                    AvciValidator.ValidateFrame(record.AsSpan(0, AvciValidator.FrameBytes));
-                    if (record.AsSpan(AvciValidator.FrameBytes, 512).ContainsAnyExcept((byte)0)) throw new MediaMismatchException("Unsupported nonzero video trailer");
-                    await video.WriteAsync(record.AsMemory(0, AvciValidator.FrameBytes), cancellationToken);
-                }
-            }
-            await using var audio = new FileStream(audioPath, FileMode.CreateNew, FileAccess.Write);
-            await audio.WriteAsync(PcmWave.Header(info.FrameCount * 960, 8), cancellationToken);
-            if (info.HasAudio) source.Position = info.AudioOffset;
-            for (long frame = 0; frame < info.FrameCount; frame++)
-            {
-                if (info.HasAudio)
-                {
-                    await source.ReadExactlyAsync(record.AsMemory(0, AudioStride), cancellationToken);
-                    PcmWave.InterleaveRecord(record.AsSpan(0, AudioStride), pcm);
-                }
-                await audio.WriteAsync(pcm, cancellationToken);
-            }
-            return new PreparedMedia(videoPath, audioPath, info.FrameCount, 8, info.TimecodeStartFrames, true, "Recovered native AVC-Intra100 1080p50 clip");
-        }
-        finally { ArrayPool<byte>.Shared.Return(record); }
     }
 
     private static async Task WriteHashAsync(Stream output, ReadOnlyMemory<byte> data, IncrementalHash hash, CancellationToken token, IncrementalHash? payload = null)

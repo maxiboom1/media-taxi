@@ -26,6 +26,12 @@ public static class DashboardEndpoints
                 return Results.BadRequest(new { error = "view must be active or older" });
             return Results.Json(view.GetJobs(requested), JsonOptions);
         });
+        app.MapGet("/api/jobs/{id}", (HttpContext context, string id) =>
+        {
+            NoCache(context);
+            var detail = view.GetJob(id);
+            return detail is null ? Results.NotFound() : Results.Json(detail, JsonOptions);
+        });
         app.MapGet("/api/system", (HttpContext context) =>
         {
             NoCache(context);
