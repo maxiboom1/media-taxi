@@ -9,6 +9,11 @@ public sealed class InventoryService : BackgroundService
     private readonly ILogger<InventoryService> logger;
     private readonly object sync = new();
     private readonly Dictionary<string, InventorySnapshot> snapshots = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> refreshRequests = new(StringComparer.OrdinalIgnoreCase);
+    public event Action? Changed;
+
+    public void RequestRefresh(string id) { lock (sync) if (snapshots.ContainsKey(id)) refreshRequests.Add(id); }
+    private bool TakeRefresh(string id) { lock (sync) return refreshRequests.Remove(id); }
 
     public InventoryService(TaxiOptions options, ILogger<InventoryService> logger)
     {
@@ -38,7 +43,7 @@ public sealed class InventoryService : BackgroundService
             try
             {
                 await new OgpSession(destination, options.Timing,
-                    (connected, ready, error, paths) => Update(destination.Id, connected, ready, error, paths))
+                    (connected, ready, error, paths) => Update(destination.Id, connected, ready, error, paths), () => TakeRefresh(destination.Id))
                     .RunAsync(stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
@@ -68,5 +73,6 @@ public sealed class InventoryService : BackgroundService
                 LastInventoryUtc = paths is null ? previous.LastInventoryUtc : DateTimeOffset.UtcNow
             };
         }
+        Changed?.Invoke();
     }
 }

@@ -25,7 +25,7 @@ public sealed class FolderOptions
 }
 public sealed class WorkerOptions
 {
-    public int Native { get; set; } = 2;
+    public int Native { get; set; } = 1;
     public int Normalize { get; set; } = 1;
     public int Proxy { get; set; } = 1;
     public int Copy { get; set; } = 4;

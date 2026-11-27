@@ -1,9 +1,11 @@
 namespace MediaTaxi.Domain;
 
-public sealed record DestinationView(string Id, string Name, string CopyStatus, string Availability, string? Error);
+public sealed record DestinationView(string Id, string Name, string CopyStatus, string Availability, string? Error,
+    bool InventoryConfirmed = false);
 public sealed record JobView(string Id, string OriginalName, string ClipName, DateTimeOffset ArrivalUtc,
     string Location, string Stage, double? Progress, string Mode, string MediaSummary,
-    string? Error, string ProxyStatus, IReadOnlyList<DestinationView> Destinations);
+    string? Error, string ProxyStatus, IReadOnlyList<DestinationView> Destinations,
+    double? ProxyProgress = null, IReadOnlyDictionary<string, StageTiming>? Timings = null);
 public sealed record JobsSnapshot(long Revision, string TimeZone, int ActiveCount, int OlderCount, IReadOnlyList<JobView> Jobs);
 public sealed record FolderHealth(string Id, string Path, bool Readable, bool Writable, long? FreeBytes, string? Error);
 public sealed record MediaHealth(bool Ready, string FfmpegVersion, string FfprobeVersion, string[] Capabilities, string? Error);

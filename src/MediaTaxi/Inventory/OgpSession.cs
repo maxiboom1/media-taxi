@@ -5,7 +5,7 @@ using MediaTaxi.Configuration;
 namespace MediaTaxi.Inventory;
 
 internal sealed class OgpSession(DestinationOptions destination, TimingOptions timing,
-    Action<bool, bool, string?, IReadOnlyList<string>?> publish)
+    Action<bool, bool, string?, IReadOnlyList<string>?> publish, Func<bool>? refreshRequested = null)
 {
     private static readonly byte[] Handshake = OgpProtocol.Encode("handshake", new { trusted = false, force = false, detail = "full" });
     private static readonly byte[] InventoryRequest = OgpProtocol.Encode("value-request", new { oid = "explorer.raw_clip_list", element = false });
@@ -68,7 +68,8 @@ internal sealed class OgpSession(DestinationOptions destination, TimingOptions t
                     throw new IOException("OGP complete inventory response timed out.");
                 if (Stopwatch.GetElapsedTime(lastReceived).TotalSeconds >= 15)
                     throw new IOException("OGP connection became silent.");
-                if (ready && !fullReadPending && Stopwatch.GetElapsedTime(lastRequest).TotalSeconds >= timing.InventoryPollSeconds)
+                var refresh = ready && !fullReadPending && (refreshRequested?.Invoke() ?? false);
+                if (ready && !fullReadPending && (refresh || Stopwatch.GetElapsedTime(lastRequest).TotalSeconds >= timing.InventoryPollSeconds))
                 {
                     await stream.WriteAsync(InventoryRequest, connection.Token);
                     fullReadPending = true;

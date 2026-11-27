@@ -1,7 +1,10 @@
 using System.Security.Cryptography;
 using System.Xml.Linq;
+using System.Diagnostics;
 
 namespace MediaTaxi.Storage;
+
+public sealed record CopyMeasurement(DateTimeOffset WriteStartedUtc, double WriteSeconds, DateTimeOffset VerifyStartedUtc, double VerifySeconds);
 
 public static class FileOperations
 {
@@ -26,7 +29,8 @@ public static class FileOperations
         catch (Exception ex) when (ex is System.Xml.XmlException or EndOfStreamException or FormatException)
         { return false; }
     }
-    public static async Task CopyVerifiedAsync(string source, string destination, string partial, string expectedHash, CancellationToken ct)
+    public static async Task CopyVerifiedAsync(string source, string destination, string partial, string expectedHash, CancellationToken ct,
+        Action<CopyMeasurement>? measurement = null)
     {
         // A completed previous publication is the only safe repeat-success case.
         if (File.Exists(destination))
@@ -37,12 +41,17 @@ public static class FileOperations
         try
         {
             if (File.Exists(partial)) File.Delete(partial);
+            var writeStarted = DateTimeOffset.UtcNow;
+            var clock = Stopwatch.GetTimestamp();
             await using (var input = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.Read, 1024 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan))
             await using (var output = new FileStream(partial, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1024 * 1024, FileOptions.Asynchronous | FileOptions.WriteThrough))
             {
                 await input.CopyToAsync(output, ct); await output.FlushAsync(ct); output.Flush(true);
             }
+            var writeSeconds = Stopwatch.GetElapsedTime(clock).TotalSeconds;
+            var verifyStarted = DateTimeOffset.UtcNow; clock = Stopwatch.GetTimestamp();
             if (await HashAsync(partial, ct) != expectedHash) throw new IOException("Transferred file checksum mismatch.");
+            measurement?.Invoke(new(writeStarted, writeSeconds, verifyStarted, Stopwatch.GetElapsedTime(clock).TotalSeconds));
             ct.ThrowIfCancellationRequested();
             File.Move(partial, destination, overwrite: false);
         }

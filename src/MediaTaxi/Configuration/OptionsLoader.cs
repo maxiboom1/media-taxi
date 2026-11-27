@@ -34,7 +34,7 @@ public static partial class OptionsLoader
             ConfigPath = path,
             LogLevel = Value("logging:level", "Information"),
             Folders = new() { Watch = Folder("folders:watch"), Finished = Folder("folders:finished"), Failed = Folder("folders:failed"), Abekas = Folder("folders:abekas"), Proxy = Folder("folders:proxy"), Work = Folder("folders:work"), State = Folder("folders:state") },
-            Workers = new() { Native = Number("workers:native", 2), Normalize = Number("workers:normalize", 1), Proxy = Number("workers:proxy", 1), Copy = Number("workers:copy", 4), CopiesPerDestination = Number("workers:copies_per_destination", 1) },
+            Workers = new() { Native = Number("workers:native", 1), Normalize = Number("workers:normalize", 1), Proxy = Number("workers:proxy", 1), Copy = Number("workers:copy", 4), CopiesPerDestination = Number("workers:copies_per_destination", 1) },
             Media = new() { FfmpegPath = Executable("media:ffmpeg", "tools/ffmpeg.exe"), FfprobePath = Executable("media:ffprobe", "tools/ffprobe.exe"), AllowNormalization = Boolean("media:allow_normalization", false), Threads = Number("media:threads", 4, 1, 256), TimeoutSeconds = Number("media:timeout_seconds", 3600, 10, 86400) },
             Timing = new() { StabilitySeconds = Seconds("timing:stability_seconds", 10), ReconcileSeconds = Seconds("timing:reconcile_seconds", 10), InventoryPollSeconds = Seconds("timing:inventory_poll_seconds", 30), InventoryTimeoutSeconds = Seconds("timing:inventory_timeout_seconds", 5), ReconnectSeconds = Seconds("timing:reconnect_seconds", 5) },
             Web = new() { Listen = Value("web:listen", "http://0.0.0.0:8080"), TimeZone = Value("web:time_zone", "Asia/Jerusalem") },

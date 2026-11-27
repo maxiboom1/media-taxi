@@ -12,6 +12,72 @@ namespace MediaTaxi.Tests;
 
 public sealed class EnginePipelineTests
 {
+    [Fact]
+    public async Task SourceMovedDuringFolderScanDoesNotCreatePhantomArrival()
+    {
+        await using var fixture = new PipelineFixture(); await fixture.AddWatchAsync("moving.mxf");
+        await fixture.WaitForAsync(j => j.Stage == "Done");
+        var scan = new FolderScanner(fixture.Options).Scan();
+        var archived = Assert.Single(scan.Files);
+        fixture.ScanSnapshotOverride = scan with { Files = scan.Files.Append(archived with { Path = Path.Combine(fixture.Options.Folders.Watch, "moving.mxf"), Location = SourceLocation.Watch }).ToArray() };
+        await fixture.ScanAsync();
+        Assert.Single(fixture.AllJobs());
+        Assert.Equal(1, fixture.Media.WrapCalls);
+    }
+
+    [Fact]
+    public async Task TenNativeClipsFinishAllDeliveriesWhileIndependentProxyQueueIsBlocked()
+    {
+        await using var fixture = new PipelineFixture();
+        fixture.Options.Workers.Native = 1;
+        await fixture.RestartAsync();
+        fixture.Media.BlockProxy = true;
+        for (var n = 0; n < 10; n++) await fixture.AddWatchAsync($"independent-{n:D2}.mxf");
+        await fixture.WaitUntilAsync(() => fixture.AllJobs().Length == 10 && fixture.AllJobs().All(j => j.Destinations.All(d => d.CopyStatus == "Succeeded")));
+        Assert.Equal(10, fixture.Media.WrapCalls);
+        Assert.Equal(1, fixture.Media.ProxyCalls);
+        Assert.Equal(10, Directory.EnumerateFiles(fixture.Options.Folders.Finished).Count());
+        Assert.Empty(Directory.EnumerateFiles(fixture.Options.Folders.Watch));
+        Assert.Equal(10, fixture.Engine.GetStatistics().Imported);
+        Assert.Equal(0, fixture.Engine.GetStatistics().ProxyCompletions);
+        var jobs = fixture.AllJobs();
+        Assert.Single(jobs, j => j.ProxyStatus == "Working");
+        Assert.Equal(9, jobs.Count(j => j.ProxyStatus == "Queued"));
+        foreach (var job in jobs)
+        foreach (var destination in fixture.Options.Destinations)
+            Assert.True(job.Timings!["archive"].FinishedUtc <= job.Timings["delivery:" + destination.Id].StartedUtc);
+        foreach (var destination in fixture.Options.Destinations)
+        {
+            var copies = jobs.Select(j => j.Timings!["delivery:" + destination.Id]).OrderBy(t => t.StartedUtc).ToArray();
+            for (var n = 1; n < copies.Length; n++) Assert.True(copies[n - 1].FinishedUtc <= copies[n].StartedUtc);
+        }
+        fixture.Media.ReleaseProxies.TrySetResult();
+        await fixture.WaitUntilAsync(() => fixture.AllJobs().All(j => j.Stage == "Done"));
+        Assert.Equal(10, fixture.Engine.GetStatistics().ProxyCompletions);
+    }
+
+    [Fact]
+    public async Task FailedProxyDoesNotAbortDeliveriesOrHoldTheNextNativeWorker()
+    {
+        await using var fixture = new PipelineFixture(); fixture.Media.FailProxy = true;
+        for (var n = 0; n < 3; n++) await fixture.AddWatchAsync($"bad-proxy-{n}.mxf");
+        await fixture.WaitUntilAsync(() => fixture.AllJobs().Length == 3 && fixture.AllJobs().All(j => j.Stage == "Done"));
+        Assert.All(fixture.AllJobs(), j =>
+        {
+            Assert.Equal("Failed", j.ProxyStatus);
+            Assert.Equal("Finished", j.Location);
+            Assert.All(j.Destinations, d => Assert.Equal("Succeeded", d.CopyStatus));
+            Assert.Contains("Proxy failed", j.Error);
+            Assert.False(j.Timings!["proxy"].Succeeded);
+        });
+        Assert.Equal(3, fixture.Engine.GetStatistics().Imported);
+        Assert.Equal(3, fixture.Engine.GetStatistics().ProcessingFailures);
+        await fixture.RestartAsync();
+        for (var n = 0; n < 4; n++) await fixture.ScanAsync();
+        Assert.Equal(3, fixture.Media.ProxyCalls);
+        Assert.Equal(3, fixture.Media.PrepareCalls);
+    }
+
     [Theory]
     [InlineData(0, 4)]
     [InlineData(2, 2)]
@@ -312,6 +378,7 @@ public sealed class EnginePipelineTests
         public FakeMedia Media { get; } = new();
         public JobStore Store { get; private set; }
         public JobEngine Engine { get; private set; }
+        public FolderScan? ScanSnapshotOverride { get; set; }
         private InventoryService inventory;
 
         public PipelineFixture()
@@ -321,7 +388,7 @@ public sealed class EnginePipelineTests
             Options.Destinations = Enumerable.Range(1, 4).Select(n => new DestinationOptions { Id = "tria" + n, Name = "TLV" + n, Path = Root("tria" + n), Host = "127.0.0.1" }).ToList();
             Store = new(Options.Folders.State);
             inventory = new(Options, NullLogger<InventoryService>.Instance);
-            Engine = new(Options, Store, Media, inventory, NullLogger<JobEngine>.Instance);
+            Engine = new(Options, Store, Media, inventory, NullLogger<JobEngine>.Instance, scanOverride: () => ScanSnapshotOverride ?? new FolderScanner(Options).Scan());
         }
         public string Clip(string name) => Path.Combine(Options.Folders.Abekas, name + ".clip");
         public string Proxy(string name) => Path.Combine(Options.Folders.Proxy, name + ".mp4");
@@ -379,6 +446,8 @@ public sealed class EnginePipelineTests
     {
         public bool Native { get; set; } = true;
         public bool BlockProxy { get; set; }
+        public bool FailProxy { get; set; }
+        public TaskCompletionSource ReleaseProxies { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public bool ProxyCancelled { get; private set; }
         public TaskCompletionSource ProxyStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public int PrepareCalls, WrapCalls, ProxyCalls;
@@ -403,9 +472,10 @@ public sealed class EnginePipelineTests
             ProxyStarted.TrySetResult();
             if (BlockProxy)
             {
-                try { await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken); }
+                try { await ReleaseProxies.Task.WaitAsync(cancellationToken); }
                 catch (OperationCanceledException) { ProxyCancelled = true; throw; }
             }
+            if (FailProxy) throw new IOException("Test proxy encoder failed");
             await File.WriteAllTextAsync(outputPath, "proxy:" + jobId, cancellationToken);
             return new(outputPath, await FileOperations.HashAsync(outputPath, cancellationToken));
         }

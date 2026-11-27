@@ -8,11 +8,12 @@ let reloadTimer;
 let configuredDestinations = [];
 
 function stageText(job) {
-  if (job.proxyStatus === "Failed" && job.stage === "Done") return ["Proxy failed", "failure"];
   if (job.stage === "Done") {
     const succeeded = job.destinations.filter((item) => item.copyStatus === "Succeeded").length;
     if (job.destinations.length && succeeded === 0) return ["Delivery failed", "failure"];
     if (succeeded < job.destinations.length) return ["Done with warnings", "warning"];
+    if (job.destinations.some((item) => !item.inventoryConfirmed)) return ["Copied; awaiting Tria", "working"];
+    if (job.proxyStatus === "Failed") return ["Done with warnings", "warning"];
     return ["Done", "success"];
   }
   if (job.stage === "Existing") return [job.location === "Failed" ? "Existing failure" : "Existing", job.location === "Failed" ? "failure" : "neutral"];
@@ -28,7 +29,7 @@ function renderDestination(item) {
   cell.append(badge(item.availability, tones[item.availability] || "neutral"));
   if (item.copyStatus === "InProgress") cell.append(element("small", "Copying", "copy-status"));
   else if (item.copyStatus === "Failed") cell.append(element("small", "Copy failed", "copy-status failure-text"));
-  else if (item.copyStatus === "Succeeded") cell.append(element("small", "Copy verified", "copy-status"));
+  else if (item.copyStatus === "Succeeded") cell.append(element("small", item.inventoryConfirmed ? "OGP presence confirmed" : "Copied; awaiting OGP", "copy-status"));
   if (item.error) cell.title = item.error;
   return cell;
 }
@@ -58,6 +59,10 @@ function renderJob(job, destinations) {
   const proxy = element("td");
   const proxyTone = job.proxyStatus === "Ready" ? "success" : job.proxyStatus === "Failed" ? "failure" : ["Pending", "Not required", "Unknown", "Untracked"].includes(job.proxyStatus) ? "neutral" : "working";
   proxy.append(badge(job.proxyStatus || "Pending", proxyTone));
+  if (job.proxyStatus === "Working" && job.proxyProgress != null) {
+    const meter = element("progress"); meter.max = 100; meter.value = Math.min(100, Math.max(0, job.proxyProgress));
+    meter.setAttribute("aria-label", `Proxy: ${Math.round(meter.value)} percent`); proxy.append(meter);
+  }
   row.append(arrived, name, format, status, proxy);
   for (const destination of destinations) row.append(renderDestination(job.destinations.find((item) => item.id === destination.id)));
   return row;

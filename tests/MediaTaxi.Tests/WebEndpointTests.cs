@@ -26,6 +26,8 @@ public sealed class WebEndpointTests
         Assert.Equal(1, jobs.RootElement.GetProperty("olderCount").GetInt32());
         Assert.Equal("older", host.View.LastView);
         Assert.False(jobs.RootElement.TryGetProperty("Revision", out _));
+        Assert.DoesNotContain("durationStatus", jobs.RootElement.GetRawText());
+        Assert.DoesNotContain("Unconfirmed", jobs.RootElement.GetRawText());
 
         Assert.Equal(HttpStatusCode.BadRequest, (await host.Client.GetAsync("/api/jobs?view=invalid")).StatusCode);
         Assert.Equal(HttpStatusCode.OK, (await host.Client.GetAsync("/health/live")).StatusCode);

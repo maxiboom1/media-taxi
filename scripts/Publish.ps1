@@ -9,7 +9,8 @@ if (-not $DotnetPath) {
     $localSdk = Join-Path $projectRoot '.tools\dotnet\dotnet.exe'
     if (Test-Path -LiteralPath $localSdk) { $DotnetPath = $localSdk } else { $DotnetPath = (Get-Command dotnet -ErrorAction Stop).Source }
 }
-if (-not $OutputDirectory) { $OutputDirectory = Join-Path $projectRoot 'artifacts\MediaTaxi-0.2.0-win-x64' }
+$version = (Get-Content -LiteralPath (Join-Path $projectRoot 'VERSION') -Raw).Trim()
+if (-not $OutputDirectory) { $OutputDirectory = Join-Path $projectRoot ("artifacts\MediaTaxi-$version-win-x64") }
 $outputPath = [IO.Path]::GetFullPath($OutputDirectory)
 if (Test-Path -LiteralPath $outputPath) { throw 'Choose a new output directory; publication does not overwrite an existing build.' }
 & $DotnetPath publish (Join-Path $projectRoot 'src\MediaTaxi\MediaTaxi.csproj') -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -o $outputPath

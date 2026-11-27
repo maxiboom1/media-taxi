@@ -13,6 +13,24 @@ namespace MediaTaxi.Tests;
 public sealed class EngineRecoveryTests
 {
     [Fact]
+    public async Task MissingSourcePausesAnInterruptedJobBeforeRetirementInsteadOfResumingDelivery()
+    {
+        using var fixture = new RecoveryFixture();
+        fixture.Options.Timing.ReconcileSeconds = 60;
+        var job = fixture.Seed("removed.mxf", SourceLocation.Watch, JobStage.Delivering);
+        fixture.ReserveOutputs(job); job.Wrapped = true; job.Mode = "Native";
+        await RecoveryMedia.WriteClipAsync(job.ArtifactPath!, job.Id);
+        fixture.Store.Save(job); File.Delete(job.SourcePath);
+        using var engine = fixture.CreateEngine();
+        await engine.ReconcileAsync(default); await Task.Delay(150); await engine.ReconcileAsync(default);
+        var paused = Assert.Single(fixture.Store.Load());
+        Assert.Equal(1, paused.AbsentScans);
+        Assert.Equal(JobStage.Delivering, paused.Stage);
+        Assert.All(paused.Destinations, destination => Assert.Equal(CopyState.NotAttempted, destination.CopyStatus));
+        Assert.Equal(0, engine.GetStatistics().ProcessingFailures);
+    }
+
+    [Fact]
     public async Task RejectedFormatKeepsActualIncomingInspectionSummary()
     {
         using var fixture = new RecoveryFixture(); fixture.Media.Native = false;

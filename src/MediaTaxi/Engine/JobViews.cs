@@ -16,8 +16,8 @@ public sealed partial class JobEngine
                     j.Error, j.ProxyStatus, options.Destinations.Select(d =>
                     {
                         var record = j.Destinations.FirstOrDefault(r => r.Id == d.Id);
-                        return new DestinationView(d.Id, d.Name, record?.CopyStatus.ToString() ?? "NotAttempted", record?.Availability.ToString() ?? "Unknown", record?.Error);
-                    }).ToArray())).ToArray();
+                        return new DestinationView(d.Id, d.Name, record?.CopyStatus.ToString() ?? "NotAttempted", record?.Availability.ToString() ?? "Unknown", record?.Error, record?.InventoryConfirmed ?? false);
+                    }).ToArray(), j.ProxyProgress, new Dictionary<string, StageTiming>(j.Timings))).ToArray();
             return new(revision, options.Web.TimeZone, visible.Count(Active), visible.Count(j => !Active(j)), chosen);
         }
     }
@@ -35,7 +35,7 @@ public sealed partial class JobEngine
             var pause = processingReady ? null : errors.FirstOrDefault() ?? "Required folders/media tools are not ready.";
             var stages = jobs.Values.Where(j => j.Managed && !j.Retiring && j.Stage is not (JobStage.Done or JobStage.Existing or JobStage.Failed))
                 .GroupBy(j => j.Stage).OrderBy(group => group.Key).ToDictionary(group => group.Key.ToString(), group => group.Count());
-            return new("0.2.0", (DateTimeOffset.UtcNow - started).TotalSeconds, processingReady, pause, folders, mediaHealth, servers,
+            return new("0.2.1", (DateTimeOffset.UtcNow - started).TotalSeconds, processingReady, pause, folders, mediaHealth, servers,
                 new Dictionary<string, int>(activeWorkers), jobs.Values.Count(j => !j.Retiring && j.Managed && j.Stage is JobStage.Waiting or JobStage.Queued), cleanup, errors, stages);
         }
     }

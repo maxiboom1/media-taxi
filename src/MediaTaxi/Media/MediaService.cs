@@ -44,6 +44,12 @@ public sealed class MediaService(TaxiOptions options) : IMediaService
             }
             else videoArguments.AddRange(["-c:v", "copy", "-bsf:v", "h264_mp4toannexb"]);
             videoArguments.AddRange(["-f", "h264", video]);
+            // Native video and PCM are demultiplexed in one source pass. Video
+            // remains stream-copy; no picture decoding or encoding is introduced.
+            var nativeAudio = !normalize && probe.HasAudio;
+            var pan = "pan=8c|" + string.Join('|', Enumerable.Range(0, probe.AudioChannels).Select(i => $"c{i}=c{i}"));
+            if (nativeAudio)
+                videoArguments.AddRange(["-map", "0:a:0", "-vn", "-af", pan, "-c:a", "pcm_s32le", "-rf64", "auto", audio]);
             await runner.RunAsync(options.Media.FfmpegPath, videoArguments, options.Media.TimeoutSeconds, cancellationToken, probe.Duration, progress);
             var bytes = new FileInfo(video).Length;
             if (bytes <= 0 || bytes % AvciValidator.FrameBytes != 0)
@@ -55,12 +61,14 @@ public sealed class MediaService(TaxiOptions options) : IMediaService
             AvciValidator.ValidateFrame(firstFrame);
             if (probe.HasAudio)
             {
-                var audioArguments = CommonArguments();
-                audioArguments.AddRange(["-i", source, "-map", "0:a:0", "-vn"]);
-                var pan = "pan=8c|" + string.Join('|', Enumerable.Range(0, probe.AudioChannels).Select(i => $"c{i}=c{i}"));
-                if (normalize) pan += $",aresample=48000,apad,atrim=end_sample={frames * 960}";
-                audioArguments.AddRange(["-af", pan, "-c:a", "pcm_s32le", "-rf64", "auto", audio]);
-                await runner.RunAsync(options.Media.FfmpegPath, audioArguments, options.Media.TimeoutSeconds, cancellationToken);
+                if (!nativeAudio)
+                {
+                    var audioArguments = CommonArguments();
+                    audioArguments.AddRange(["-i", source, "-map", "0:a:0", "-vn"]);
+                    pan += $",aresample=48000,apad,atrim=end_sample={frames * 960}";
+                    audioArguments.AddRange(["-af", pan, "-c:a", "pcm_s32le", "-rf64", "auto", audio]);
+                    await runner.RunAsync(options.Media.FfmpegPath, audioArguments, options.Media.TimeoutSeconds, cancellationToken);
+                }
                 var info = PcmWave.ReadInfo(audio);
                 if (info.Samples != frames * 960) throw new MediaMismatchException("Native audio/video durations differ");
                 if (normalize) await QuantizeAudioAsync(audio, info, cancellationToken);
@@ -87,7 +95,8 @@ public sealed class MediaService(TaxiOptions options) : IMediaService
         if (options.Proxy.Channels.Length is < 1 or > 2 || options.Proxy.Channels.Any(c => c is < 1 or > 8))
             throw new MediaMismatchException("Proxy requires one or two source channel indexes in 1..8");
         var args = CommonArguments();
-        args.AddRange(["-r", "50", "-f", "h264", "-i", media.VideoPath, "-i", media.AudioPath,
+        args.AddRange(["-threads", options.Media.Threads.ToString(CultureInfo.InvariantCulture),
+            "-r", "50", "-f", "h264", "-i", media.VideoPath, "-i", media.AudioPath,
             "-map", "0:v:0", "-map", "1:a:0", "-vf", $"scale={options.Proxy.Width}:{options.Proxy.Height}:flags=lanczos",
             "-c:v", options.Proxy.Codec == "h265" ? "libx265" : "libx264", "-preset", options.Proxy.Preset,
             "-pix_fmt", "yuv420p", "-threads", options.Media.Threads.ToString(CultureInfo.InvariantCulture),

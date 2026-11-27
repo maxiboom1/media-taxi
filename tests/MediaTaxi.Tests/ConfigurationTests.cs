@@ -25,7 +25,7 @@ public sealed class ConfigurationTests
             """);
         var options = OptionsLoader.Load(config);
         Assert.Equal(System.IO.Path.Combine(t.Path, "watch"), options.Folders.Watch);
-        Assert.Single(options.Destinations); Assert.Equal(2, options.Workers.Native); Assert.False(options.Media.AllowNormalization);
+        Assert.Single(options.Destinations); Assert.Equal(1, options.Workers.Native); Assert.False(options.Media.AllowNormalization);
         Assert.Equal(System.IO.Path.Combine(t.Path, "tools", "ffmpeg.exe"), options.Media.FfmpegPath);
     }
     [Fact]

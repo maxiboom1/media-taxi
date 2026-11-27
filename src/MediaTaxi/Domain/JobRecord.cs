@@ -34,18 +34,25 @@ public sealed class JobRecord
     public SourceLocation? MoveLocation { get; set; }
     public bool Wrapped { get; set; }
     public bool Archived { get; set; }
+    public bool DeliveryCompleted { get; set; }
+    public double? ProxyProgress { get; set; }
+    public Dictionary<string, StageTiming> Timings { get; set; } = [];
     public bool TerminalFailure { get; set; }
     public bool Retiring { get; set; }
     public int AbsentScans { get; set; }
     public DateTimeOffset? LastAbsentScanUtc { get; set; }
     public List<DestinationRecord> Destinations { get; set; } = [];
 }
+
+public sealed record StageTiming(DateTimeOffset StartedUtc, DateTimeOffset? FinishedUtc, double? Seconds, bool? Succeeded);
 public sealed class DestinationRecord
 {
     public string Id { get; set; } = "";
     public CopyState CopyStatus { get; set; }
     public Availability Availability { get; set; }
     public bool SeenOnline { get; set; }
+    public bool InventoryConfirmed { get; set; }
+    public DateTimeOffset? PublishedUtc { get; set; }
     public string? Error { get; set; }
     public string? TempPath { get; set; }
 }

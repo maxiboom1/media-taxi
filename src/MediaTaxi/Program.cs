@@ -7,7 +7,7 @@ using MediaTaxi.Storage;
 using MediaTaxi.Web;
 using System.Text.Json.Serialization;
 
-if (args.Contains("--version")) { Console.WriteLine("Media Taxi 0.2.0"); return; }
+if (args.Contains("--version")) { Console.WriteLine("Media Taxi 0.2.1"); return; }
 var configIndex = Array.IndexOf(args, "--config");
 if (configIndex >= 0 && (configIndex + 1 >= args.Length || args[configIndex + 1].StartsWith("--", StringComparison.Ordinal)))
 { Console.Error.WriteLine("Configuration error: --config requires a path."); Environment.ExitCode = 2; return; }
@@ -33,7 +33,7 @@ builder.Services.AddSingleton<IApplicationView>(p => p.GetRequiredService<JobEng
 builder.Services.AddHostedService(p => p.GetRequiredService<JobEngine>());
 await using var app = builder.Build();
 DashboardEndpoints.Map(app, app.Services.GetRequiredService<IApplicationView>());
-app.Logger.LogInformation("Media Taxi 0.2.0 | Config: {Config} | Dashboard: {Listen}", options.ConfigPath, options.Web.Listen);
+app.Logger.LogInformation("Media Taxi 0.2.1 | Config: {Config} | Dashboard: {Listen}", options.ConfigPath, options.Web.Listen);
 await app.RunAsync();
 
 public partial class Program;

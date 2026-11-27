@@ -71,7 +71,8 @@ public sealed partial class JobEngine : BackgroundService, IApplicationView
     {
         var watchers = new List<FileSystemWatcher>();
         using var wake = new SemaphoreSlim(0, 1);
-        void Wake() { try { if (wake.CurrentCount == 0) wake.Release(); } catch (SemaphoreFullException) { } }
+        void Wake() { try { if (wake.CurrentCount == 0) wake.Release(); } catch (SemaphoreFullException) { } catch (ObjectDisposedException) { } }
+        inventory.Changed += Wake;
         foreach (var path in new[] { options.Folders.Watch, options.Folders.Finished, options.Folders.Failed })
         {
             try
@@ -100,6 +101,7 @@ public sealed partial class JobEngine : BackgroundService, IApplicationView
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
         finally
         {
+            inventory.Changed -= Wake;
             await healthLifetime.CancelAsync();
             foreach (var w in watchers) w.Dispose();
             foreach (var item in running.Values) item.Cancellation.Cancel();
@@ -133,9 +135,9 @@ public sealed partial class JobEngine : BackgroundService, IApplicationView
         await RetireAbsentAsync(scan.Files, ct);
         if (!IsReady) return;
         List<JobRecord> eligible;
-        lock (gate) eligible = jobs.Values.Where(j => !j.Retiring && j.Managed &&
+        lock (gate) eligible = jobs.Values.Where(j => !j.Retiring && j.Managed && j.AbsentScans == 0 &&
             (j.Location == SourceLocation.Watch && (j.Stage is JobStage.Waiting or JobStage.Queued or JobStage.MoveFailed || j.Wrapped) || j.Location == SourceLocation.Finished && j.Wrapped && j.Stage != JobStage.Done && !j.TerminalFailure) &&
-            DateTimeOffset.UtcNow - j.StableSinceUtc >= TimeSpan.FromSeconds(options.Timing.StabilitySeconds)).ToList();
+            DateTimeOffset.UtcNow - j.StableSinceUtc >= TimeSpan.FromSeconds(options.Timing.StabilitySeconds)).OrderBy(j => j.FirstSeenUtc).ToList();
         foreach (var job in eligible)
         {
             if (running.ContainsKey(job.Id)) continue;
@@ -188,6 +190,9 @@ public sealed partial class JobEngine : BackgroundService, IApplicationView
             // can verify both copies and finish the existing move instead of ingesting it.
             if (jobs.Values.Any(j => !j.Retiring && string.Equals(j.MoveTarget, f.Path, StringComparison.OrdinalIgnoreCase) &&
                 files.Any(source => SameSourceGeneration(j, source)))) continue;
+            // Our archive move may finish after Watch was enumerated. Its stale
+            // path is not another arrival; this never authorizes retirement.
+            if (!File.Exists(f.Path)) continue;
             var j = new JobRecord { OriginalName = Path.GetFileName(f.Path), ClipName = Path.GetFileNameWithoutExtension(f.Path), SourcePath = f.Path, Location = f.Location, SourceSize = f.Size, SourceWriteUtc = f.WriteUtc, SourceCreatedUtc = f.CreatedUtc,
                 Managed = f.Location == SourceLocation.Watch, Stage = f.Location == SourceLocation.Watch ? JobStage.Waiting : JobStage.Existing, ProxyStatus = f.Location == SourceLocation.Watch ? "Pending" : "Untracked",
                 Destinations = options.Destinations.Select(d => new DestinationRecord { Id = d.Id }).ToList() };
@@ -288,7 +293,14 @@ public sealed partial class JobEngine : BackgroundService, IApplicationView
                 var next = Availability.Unknown;
                 if (snapshots.TryGetValue(dest.Id, out var s) && s.Ready)
                 {
-                    if (InventoryMatching.Contains(s, dest.InventoryFolder, j.ClipName)) { next = Availability.OK; if (!d.SeenOnline) { d.SeenOnline = true; changed = true; } }
+                    if (InventoryMatching.Contains(s, dest.InventoryFolder, j.ClipName))
+                    {
+                        next = Availability.OK;
+                        if (!d.SeenOnline) { d.SeenOnline = true; changed = true; }
+                        if (!d.InventoryConfirmed && d.CopyStatus == CopyState.Succeeded &&
+                            (d.PublishedUtc is null || s.LastInventoryUtc >= d.PublishedUtc))
+                        { d.InventoryConfirmed = true; changed = true; }
+                    }
                     else next = d.SeenOnline ? Availability.Removed : Availability.Missing;
                 }
                 if (next != d.Availability) { d.Availability = next; changed = true; }

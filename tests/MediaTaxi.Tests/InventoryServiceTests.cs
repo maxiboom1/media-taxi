@@ -46,7 +46,7 @@ public sealed class InventoryServiceTests
         listener.Start();
         using var service = new InventoryService(new TaxiOptions
         {
-            Timing = new() { InventoryTimeoutSeconds = 1, InventoryPollSeconds = 2, ReconnectSeconds = .05 },
+            Timing = new() { InventoryTimeoutSeconds = 1, InventoryPollSeconds = 60, ReconnectSeconds = .05 },
             Destinations = [new() { Id = "a", Name = "Test", Host = "127.0.0.1", Port = ((IPEndPoint)listener.LocalEndpoint).Port }]
         }, NullLogger<InventoryService>.Instance);
         try
@@ -61,6 +61,14 @@ public sealed class InventoryServiceTests
             await stream.WriteAsync(FullList("IMPORTS/TEST"), deadline.Token);
             await WaitUntilAsync(() => service.GetSnapshots()[0].Ready, deadline.Token);
             Assert.Equal("IMPORTS/TEST", Assert.Single(service.GetSnapshots()[0].Paths));
+
+            var previousInventory = service.GetSnapshots()[0].LastInventoryUtc;
+            service.RequestRefresh("a");
+            var afterPublication = await ReadMessageAsync(stream, deadline.Token);
+            Assert.Equal("value-request", afterPublication.Type);
+            Assert.Equal("explorer.raw_clip_list", afterPublication.Payload.GetProperty("oid").GetString());
+            await stream.WriteAsync(FullList("IMPORTS/TEST"), deadline.Token);
+            await WaitUntilAsync(() => service.GetSnapshots()[0].LastInventoryUtc > previousInventory, deadline.Token);
 
             await stream.WriteAsync(OgpProtocol.Encode("value", new { oid = "explorer.raw_clip_list.0", value = "changed" }), deadline.Token);
             var requested = await ReadMessageAsync(stream, deadline.Token);
