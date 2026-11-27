@@ -5,7 +5,7 @@ using System.Text;
 namespace MediaTaxi.Media;
 
 /// <summary>Shell-free child process execution with concurrent pipe draining and tree cancellation.</summary>
-public sealed class MediaProcessRunner
+public sealed partial class MediaProcessRunner
 {
     private const int OutputLimit = 4 * 1024 * 1024;
     private const int ErrorLimit = 64 * 1024;

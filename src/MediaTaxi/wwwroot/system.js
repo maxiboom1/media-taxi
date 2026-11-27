@@ -51,6 +51,8 @@ function renderSystem(system) {
     details.push(element("dt", label), element("dd", value || "Not detected"));
   }
   byId("media-details").replaceChildren(...details);
+  const cache = system.cache;
+  byId("cache-details").replaceChildren(...(cache ? [["Path", cache.path], ["Used", formatBytes(cache.usageBytes)], ["Reserved peak", formatBytes(cache.reservedBytes)], ["Quota", formatBytes(cache.quotaBytes)], ["Disk free", formatBytes(cache.freeBytes)], ["Minimum free", formatBytes(cache.minimumFreeBytes)]].flatMap(([key, value]) => [element("dt", key), element("dd", value)]) : []));
   byId("queue-count").textContent = `${system.queueCount} queued`;
   byId("workers").replaceChildren(...Object.entries(system.workers).map(([name, count]) => {
     const item = element("div", null, "worker-count"); item.append(element("span", name), element("strong", count)); return item;

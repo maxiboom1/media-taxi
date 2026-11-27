@@ -16,11 +16,14 @@ public static partial class OptionsLoader
         double Seconds(string key, double fallback) =>
             double.TryParse(Value(key, fallback.ToString(CultureInfo.InvariantCulture)), CultureInfo.InvariantCulture, out var n) && double.IsFinite(n) && n >= 0.1 && n <= 86400
                 ? n : throw new InvalidDataException($"{key} must be 0.1..86400 seconds.");
+        double Gibibytes(string key, double fallback) =>
+            double.TryParse(Value(key, fallback.ToString(CultureInfo.InvariantCulture)), CultureInfo.InvariantCulture, out var n) && double.IsFinite(n) && n >= 0.1 && n <= 86400
+                ? n : throw new InvalidDataException($"{key} must be 0.1..86400 GiB.");
         bool Boolean(string key, bool fallback) => bool.TryParse(Value(key, fallback.ToString()), out var b)
             ? b : throw new InvalidDataException($"{key} must be true or false.");
-        string Folder(string key)
+        string Folder(string key, string fallback = "")
         {
-            var value = Value(key);
+            var value = Value(key, fallback);
             if (string.IsNullOrWhiteSpace(value)) throw new InvalidDataException($"{key} is required.");
             return Path.TrimEndingDirectorySeparator(Path.GetFullPath(value, Path.GetDirectoryName(path)!));
         }
@@ -33,13 +36,16 @@ public static partial class OptionsLoader
         {
             ConfigPath = path,
             LogLevel = Value("logging:level", "Information"),
-            Folders = new() { Watch = Folder("folders:watch"), Finished = Folder("folders:finished"), Failed = Folder("folders:failed"), Abekas = Folder("folders:abekas"), Proxy = Folder("folders:proxy"), Work = Folder("folders:work"), State = Folder("folders:state") },
+            Folders = new() { Watch = Folder("folders:watch"), Finished = Folder("folders:finished"), Failed = Folder("folders:failed"), Proxy = Folder("folders:proxy"), Work = Folder("folders:work", "C:/MediaTaxiCache"), State = Folder("folders:state") },
+            Cache = new() { MaxGiB = Gibibytes("cache:max_gib", 64), MinFreeGiB = Number("cache:min_free_gib", 32, 0, 65536) },
             Workers = new() { Native = Number("workers:native", 1), Normalize = Number("workers:normalize", 1), Proxy = Number("workers:proxy", 1), Copy = Number("workers:copy", 4), CopiesPerDestination = Number("workers:copies_per_destination", 1) },
             Media = new() { FfmpegPath = Executable("media:ffmpeg", "tools/ffmpeg.exe"), FfprobePath = Executable("media:ffprobe", "tools/ffprobe.exe"), AllowNormalization = Boolean("media:allow_normalization", false), Threads = Number("media:threads", 4, 1, 256), TimeoutSeconds = Number("media:timeout_seconds", 3600, 10, 86400) },
             Timing = new() { StabilitySeconds = Seconds("timing:stability_seconds", 10), ReconcileSeconds = Seconds("timing:reconcile_seconds", 10), InventoryPollSeconds = Seconds("timing:inventory_poll_seconds", 30), InventoryTimeoutSeconds = Seconds("timing:inventory_timeout_seconds", 5), ReconnectSeconds = Seconds("timing:reconnect_seconds", 5) },
             Web = new() { Listen = Value("web:listen", "http://0.0.0.0:8080"), TimeZone = Value("web:time_zone", "Asia/Jerusalem") },
             Proxy = new() { Codec = Value("proxy:codec", "h264").ToLowerInvariant(), Width = Number("proxy:width", 640, 2, 3840), Height = Number("proxy:height", 360, 2, 2160), Fps = Number("proxy:fps", 50, 1, 50), RateControl = Value("proxy:rate_control", "bitrate").ToLowerInvariant(), VideoBitrate = Value("proxy:video_bitrate", "1200k"), AudioBitrate = Value("proxy:audio_bitrate", "128k"), Crf = Number("proxy:crf", 26, 0, 51), Preset = Value("proxy:preset", "fast") }
         };
+        o.Proxy.DeferWhileHiresBusy = Boolean("proxy:defer_while_hires_busy", true);
+        if (c["folders:abekas"] is not null) o.Warnings.Add("folders.abekas is obsolete and ignored. Delivery clips now use the temporary work cache.");
         try { o.Proxy.Channels = Value("proxy:channels", "1,2").Split(',').Select(s => int.Parse(s.Trim(), CultureInfo.InvariantCulture)).ToArray(); }
         catch (Exception ex) when (ex is FormatException or OverflowException) { throw new InvalidDataException("proxy:channels must be comma-separated channel indexes."); }
         if (o.Proxy.Channels.Length is < 1 or > 2 || o.Proxy.Channels.Distinct().Count() != o.Proxy.Channels.Length || o.Proxy.Channels.Any(n => n is < 1 or > 8))
@@ -59,6 +65,8 @@ public static partial class OptionsLoader
 
     public static void Validate(TaxiOptions o)
     {
+        if (!double.IsFinite(o.Cache.MaxGiB) || o.Cache.MaxGiB <= 0 || o.Cache.MaxGiB > 86400 || !double.IsFinite(o.Cache.MinFreeGiB) || o.Cache.MinFreeGiB < 0)
+            throw new InvalidDataException("Cache max_gib must be positive and min_free_gib nonnegative.");
         if (!Enum.TryParse<Microsoft.Extensions.Logging.LogLevel>(o.LogLevel, true, out var logLevel) || !Enum.IsDefined(logLevel))
             throw new InvalidDataException("logging:level must be Trace, Debug, Information, Warning, Error, Critical or None.");
         if (o.Destinations.Count is < 1 or > 4 || o.Destinations.Select(d => d.Id).Distinct(StringComparer.OrdinalIgnoreCase).Count() != o.Destinations.Count)
@@ -75,7 +83,7 @@ public static partial class OptionsLoader
         var sources = new[] { o.Folders.Watch, o.Folders.Finished, o.Folders.Failed };
         if (sources.Distinct(StringComparer.OrdinalIgnoreCase).Count() != 3 || Within(o.Folders.Finished, o.Folders.Failed) || Within(o.Folders.Failed, o.Folders.Finished) || Within(o.Folders.Watch, o.Folders.Finished) || Within(o.Folders.Watch, o.Folders.Failed))
             throw new InvalidDataException("Source roots must be distinct; Finished/Failed may be children of Watch, not ancestors of it or each other.");
-        var outputs = new[] { o.Folders.Abekas, o.Folders.Proxy, o.Folders.Work, o.Folders.State }.Concat(o.Destinations.Select(d => d.Path)).ToArray();
+        var outputs = new[] { o.Folders.Proxy, o.Folders.Work, o.Folders.State }.Concat(o.Destinations.Select(d => d.Path)).ToArray();
         foreach (var output in outputs)
         foreach (var source in sources)
             if (Overlaps(output, source)) throw new InvalidDataException($"Output and source folders overlap: {output}, {source}");

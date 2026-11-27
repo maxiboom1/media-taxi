@@ -27,12 +27,14 @@ public sealed class ConfigurationTests
         Assert.Equal(System.IO.Path.Combine(t.Path, "watch"), options.Folders.Watch);
         Assert.Single(options.Destinations); Assert.Equal(1, options.Workers.Native); Assert.False(options.Media.AllowNormalization);
         Assert.Equal(System.IO.Path.Combine(t.Path, "tools", "ffmpeg.exe"), options.Media.FfmpegPath);
+        Assert.Contains("obsolete", Assert.Single(options.Warnings));
+        Assert.True(options.Proxy.DeferWhileHiresBusy); Assert.Equal(64, options.Cache.MaxGiB);
     }
     [Fact]
     public void OutputInsideSourceIsRejected()
     {
         using var t = new TemporaryFolder();
-        var config = new TaxiOptions { Folders = new() { Watch = t.Path + "/watch", Finished = t.Path + "/finished", Failed = t.Path + "/failed", Abekas = t.Path + "/watch/output", Proxy = t.Path + "/proxy", Work = t.Path + "/work", State = t.Path + "/state" }, Destinations = [new() { Id = "one", Path = t.Path + "/destination" }] };
+        var config = new TaxiOptions { Folders = new() { Watch = t.Path + "/watch", Finished = t.Path + "/finished", Failed = t.Path + "/failed", Proxy = t.Path + "/watch/output", Work = t.Path + "/work", State = t.Path + "/state" }, Destinations = [new() { Id = "one", Path = t.Path + "/destination" }] };
         Assert.Throws<InvalidDataException>(() => OptionsLoader.Validate(config));
     }
 }

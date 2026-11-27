@@ -12,12 +12,19 @@ public sealed class JobStore : IDisposable
     private readonly FileStream instanceLock;
     public static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web) { Converters = { new JsonStringEnumConverter() } };
 
-    public JobStore(string stateFolder)
+    public JobStore(string stateFolder, string? configPath = null)
     {
         Directory.CreateDirectory(stateFolder);
         instanceLock = new FileStream(Path.Combine(stateFolder, "instance.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
         connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = Path.Combine(stateFolder, "media-taxi.db"), Mode = SqliteOpenMode.ReadWriteCreate, Pooling = false }.ToString());
         connection.Open();
+        var backup = Path.Combine(stateFolder, "pre-0.3.0.db");
+        if (configPath is not null && !File.Exists(backup))
+        {
+            using var copy = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = backup, Pooling = false }.ToString());
+            copy.Open(); connection.BackupDatabase(copy);
+            if (File.Exists(configPath) && !File.Exists(configPath + ".pre-0.3.0.bak")) File.Copy(configPath, configPath + ".pre-0.3.0.bak");
+        }
         Execute("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY,payload TEXT NOT NULL); CREATE TABLE IF NOT EXISTS artifacts(path TEXT PRIMARY KEY COLLATE NOCASE,job_id TEXT NOT NULL,kind TEXT NOT NULL); CREATE TABLE IF NOT EXISTS statistics(id TEXT PRIMARY KEY,at INTEGER NOT NULL,kind TEXT NOT NULL,mode TEXT NOT NULL); CREATE INDEX IF NOT EXISTS stats_at ON statistics(at);");
     }
     public List<JobRecord> Load()

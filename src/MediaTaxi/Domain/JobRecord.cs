@@ -26,12 +26,25 @@ public sealed class JobRecord
     public string? ArtifactPath { get; set; }
     public string? ArtifactSha256 { get; set; }
     public string? ArtifactUuid { get; set; }
+    public string? HeaderSha256 { get; set; }
+    public string? PayloadSha256 { get; set; }
+    public long ExpectedFrameCount { get; set; }
+    public Media.MediaInspection? Inspection { get; set; }
+    public string HiresPhase { get; set; } = "Pending";
+    public string? CacheWaitReason { get; set; }
+    public string? ProxyDeferralReason { get; set; }
+    public string CacheState { get; set; } = "None";
+    public long CacheReservationBytes { get; set; }
+    public string? CacheOwner { get; set; }
+    public string? CacheError { get; set; }
+    public DateTimeOffset? ProxyReadyUtc { get; set; }
     public string? ProxyPath { get; set; }
     public string? ProxySha256 { get; set; }
     public string ProxyStatus { get; set; } = "Pending";
     public string? WorkPath { get; set; }
     public string? MoveTarget { get; set; }
     public SourceLocation? MoveLocation { get; set; }
+    public bool ProcessedCheckpoint { get; set; }
     public bool Wrapped { get; set; }
     public bool Archived { get; set; }
     public bool DeliveryCompleted { get; set; }

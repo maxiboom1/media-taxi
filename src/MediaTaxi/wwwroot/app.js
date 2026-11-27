@@ -8,7 +8,7 @@ let reloadTimer;
 let configuredDestinations = [];
 
 function stageText(job) {
-  if (job.stage === "Done") {
+  if (job.stage === "Done" || job.hiresPhase === "Complete") {
     const succeeded = job.destinations.filter((item) => item.copyStatus === "Succeeded").length;
     if (job.destinations.length && succeeded === 0) return ["Delivery failed", "failure"];
     if (succeeded < job.destinations.length) return ["Done with warnings", "warning"];
@@ -46,6 +46,7 @@ function renderJob(job, destinations) {
   const status = element("td", null, "status-cell");
   const [label, tone] = stageText(job);
   status.append(badge(label, tone));
+  if (job.cacheWaitReason) status.append(element("small", job.cacheWaitReason, "row-error"));
   if (job.progress !== null && job.progress !== undefined && ["Transcoding", "Proxy", "Delivering", "Wrapping"].includes(job.stage)) {
     const percentage = Math.min(100, Math.max(0, Number(job.progress)));
     const progress = element("progress");
@@ -59,6 +60,7 @@ function renderJob(job, destinations) {
   const proxy = element("td");
   const proxyTone = job.proxyStatus === "Ready" ? "success" : job.proxyStatus === "Failed" ? "failure" : ["Pending", "Not required", "Unknown", "Untracked"].includes(job.proxyStatus) ? "neutral" : "working";
   proxy.append(badge(job.proxyStatus || "Pending", proxyTone));
+  if (job.proxyDeferralReason) proxy.append(element("small", job.proxyDeferralReason));
   if (job.proxyStatus === "Working" && job.proxyProgress != null) {
     const meter = element("progress"); meter.max = 100; meter.value = Math.min(100, Math.max(0, job.proxyProgress));
     meter.setAttribute("aria-label", `Proxy: ${Math.round(meter.value)} percent`); proxy.append(meter);

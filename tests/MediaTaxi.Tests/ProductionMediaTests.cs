@@ -48,19 +48,19 @@ public sealed class ProductionMediaTests
             var extracted = Path.Combine(work, "extracted");
             var output = Path.Combine(outputRoot, Path.ChangeExtension(name, ".clip"));
             var job = Guid.NewGuid().ToString("N");
-            Assert.True(await service.IsNativeAsync(source, CancellationToken.None));
-            var media = await service.PrepareAsync(source, work, null, CancellationToken.None);
-            Assert.True(media.Native);
+            var inspection = await service.InspectAsync(source, default);
+            Assert.True(inspection.Native);
+            var streamed = await service.WrapSourceAsync(source, inspection, work, output, job, null, default);
+            var artifact = streamed.Artifact;
+            Assert.DoesNotContain(Directory.EnumerateFiles(work), p => p.EndsWith(".h264", StringComparison.OrdinalIgnoreCase));
+            var media = await service.ExtractClipAsync(output, extracted, default);
             Assert.Equal(item.GetProperty("frames").GetInt64(), media.FrameCount);
             Assert.Equal(item.GetProperty("timecode_offset_frames").GetInt64(), media.TimecodeStartFrames);
-            Assert.Equal(item.GetProperty("source_video_sha256").GetString(), await HashAsync(media.VideoPath));
             var sourceChannels = item.GetProperty("source_audio_channels").GetInt32();
-            Assert.Equal(item.GetProperty("source_pcm_s32le_sha256").GetString(), await HashSelectedPcmAsync(media.AudioPath, sourceChannels));
-            var artifact = await service.WrapAsync(media, output, job, CancellationToken.None);
             var info = await FlatClip.ReadInfoAsync(output);
             Assert.Equal(media.FrameCount, info.FrameCount); Assert.Equal(media.TimecodeStartFrames, info.TimecodeStartFrames);
             Assert.Equal(Guid.Parse(job).ToString("D"), info.Uuid);
-            var recovered = await service.ExtractClipAsync(output, extracted, CancellationToken.None);
+            var recovered = media;
             Assert.Equal(item.GetProperty("source_video_sha256").GetString(), await HashAsync(recovered.VideoPath));
             Assert.Equal(item.GetProperty("source_pcm_s32le_sha256").GetString(), await HashSelectedPcmAsync(recovered.AudioPath, sourceChannels));
             var metadata = await process.RunAsync(Path.Combine(vendor, "clipmeta.exe"), [output], 120, CancellationToken.None);
@@ -86,7 +86,7 @@ public sealed class ProductionMediaTests
             reports.Add(new
             {
                 input = name, output, media.FrameCount, media.TimecodeStartFrames,
-                artifact.Sha256, artifact.Uuid, sourceChannels,
+                artifact.Sha256, artifact.HeaderSha256, artifact.PayloadSha256, artifact.Uuid, sourceChannels,
                 videoBitExact = true, pcmSampleExact = true, originalUnchanged = true,
                 rossClipmetaAccepted = true, rossNativeRead = nativeReader
             });

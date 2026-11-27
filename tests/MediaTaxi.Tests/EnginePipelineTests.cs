@@ -13,6 +13,28 @@ namespace MediaTaxi.Tests;
 public sealed class EnginePipelineTests
 {
     [Fact]
+    public async Task RunningProxyContinuesWhileSixNativeJobsDeliverAndWaitingSourceDefersFurtherProxies()
+    {
+        await using var fixture = new PipelineFixture(); fixture.Media.BlockProxy = true;
+        await fixture.AddWatchAsync("on-air.mxf");
+        await fixture.WaitUntilAsync(() => fixture.Media.ProxyCalls == 1);
+        for (var n = 0; n < 6; n++) await fixture.AddWatchAsync($"new-{n}.mxf");
+        var growing = Path.Combine(fixture.Options.Folders.Watch, "growing.mxf");
+        await using var producer = new FileStream(growing, FileMode.CreateNew, FileAccess.Write, FileShare.Read);
+        await producer.WriteAsync(new byte[] { 1, 2, 3 }); await producer.FlushAsync();
+        await fixture.WaitUntilAsync(() => fixture.AllJobs().Count(j => j.Destinations.All(d => d.CopyStatus == "Succeeded")) == 7);
+        Assert.Equal(7, fixture.Media.WrapCalls); Assert.Equal(1, fixture.Media.ProxyCalls);
+        Assert.False(fixture.Media.ProxyCancelled);
+        Assert.All(fixture.Store.Load().Where(j => j.DeliveryCompleted), j => Assert.False(File.Exists(j.ArtifactPath)));
+        fixture.Media.ReleaseProxies.TrySetResult();
+        await fixture.WaitUntilAsync(() => fixture.AllJobs().Any(j => j.ClipName == "on-air" && j.ProxyStatus == "Ready"));
+        for (var n = 0; n < 3; n++) await fixture.ScanAsync();
+        Assert.Equal(1, fixture.Media.ProxyCalls);
+        Assert.All(fixture.AllJobs().Where(j => j.ClipName.StartsWith("new-")), j => Assert.Contains("priority", j.ProxyDeferralReason));
+        await producer.DisposeAsync(); File.Delete(growing);
+        await fixture.WaitUntilAsync(() => fixture.AllJobs().Count(j => j.Stage == "Done") == 7);
+    }
+    [Fact]
     public async Task SourceMovedDuringFolderScanDoesNotCreatePhantomArrival()
     {
         await using var fixture = new PipelineFixture(); await fixture.AddWatchAsync("moving.mxf");
@@ -41,6 +63,7 @@ public sealed class EnginePipelineTests
         Assert.Equal(10, fixture.Engine.GetStatistics().Imported);
         Assert.Equal(0, fixture.Engine.GetStatistics().ProxyCompletions);
         var jobs = fixture.AllJobs();
+        Assert.All(jobs, j => Assert.Equal("Released", j.CacheState));
         Assert.Single(jobs, j => j.ProxyStatus == "Working");
         Assert.Equal(9, jobs.Count(j => j.ProxyStatus == "Queued"));
         foreach (var job in jobs)
@@ -97,7 +120,8 @@ public sealed class EnginePipelineTests
         Assert.All(job.Destinations, d => Assert.Equal("Unknown", d.Availability));
         Assert.False(File.Exists(Path.Combine(fixture.Options.Folders.Watch, "news.mxf")));
         Assert.True(File.Exists(Path.Combine(fixture.Options.Folders.Finished, "news.mxf")));
-        Assert.True(FileOperations.ClipOwned(fixture.Clip("news"), job.Id));
+        Assert.False(File.Exists(fixture.Clip("news")));
+        Assert.Equal("Released", job.CacheState);
         Assert.True(File.Exists(fixture.Proxy("news")));
         foreach (var destination in fixture.Options.Destinations.Take(failedDestinations))
             Assert.Equal("protected opener", await File.ReadAllTextAsync(Path.Combine(destination.Path, "news.clip")));
@@ -169,7 +193,7 @@ public sealed class EnginePipelineTests
         var observed = fixture.Engine.GetJobs("older").Jobs;
         Assert.Equal(2, observed.Count);
         Assert.All(observed, j => { Assert.Equal("Existing", j.Stage); Assert.Equal("Untracked", j.ProxyStatus); Assert.All(j.Destinations, d => Assert.Equal("NotAttempted", d.CopyStatus)); });
-        Assert.Empty(Directory.EnumerateFiles(fixture.Options.Folders.Abekas));
+        Assert.Empty(Directory.EnumerateFiles(fixture.Options.Folders.Work, "*.clip", SearchOption.AllDirectories));
         Assert.All(fixture.Options.Destinations, d => Assert.Empty(Directory.EnumerateFiles(d.Path)));
         Assert.Equal(0, fixture.Media.PrepareCalls);
         Assert.Equal(0, fixture.Engine.GetStatistics().Processed);
@@ -205,11 +229,11 @@ public sealed class EnginePipelineTests
         var job = await fixture.WaitForAsync(j => j.Stage == "Done");
         File.Delete(Path.Combine(fixture.Options.Folders.Finished, "nightly.mxf"));
         await fixture.ScanAsync();
-        Assert.True(File.Exists(fixture.Clip("nightly")));
+        Assert.False(File.Exists(fixture.Clip("nightly")));
         Assert.True(File.Exists(fixture.Proxy("nightly")));
         Assert.Contains(fixture.AllJobs(), j => j.Id == job.Id);
         await fixture.ScanAsync();
-        Assert.True(File.Exists(fixture.Clip("nightly")));
+        Assert.False(File.Exists(fixture.Clip("nightly")));
         await Task.Delay(120);
         await fixture.ScanAsync();
         Assert.Empty(fixture.AllJobs());
@@ -232,7 +256,7 @@ public sealed class EnginePipelineTests
         await fixture.ScanAsync();
         Assert.False(fixture.Engine.IsReady);
         Assert.Contains(fixture.AllJobs(), j => j.Id == job.Id);
-        Assert.True(File.Exists(fixture.Clip("outage")));
+        Assert.False(File.Exists(fixture.Clip("outage")));
         Assert.True(File.Exists(fixture.Proxy("outage")));
         Assert.Contains(fixture.Engine.GetSystem().Errors, e => e.Contains("Cleanup is paused", StringComparison.OrdinalIgnoreCase));
         Directory.Move(finished + "-offline", finished);
@@ -289,21 +313,21 @@ public sealed class EnginePipelineTests
         await fixture.AddWatchAsync("daily.mxf");
         var yesterday = await fixture.WaitForAsync(j => j.Stage == "Done");
         File.Delete(Path.Combine(fixture.Options.Folders.Finished, "daily.mxf"));
-        using (var locked = new FileStream(fixture.Clip("daily"), FileMode.Open, FileAccess.Read, FileShare.Read))
+        using (var locked = new FileStream(fixture.Proxy("daily"), FileMode.Open, FileAccess.Read, FileShare.Read))
         {
             await fixture.ScanAsync(); await Task.Delay(120); await fixture.ScanAsync();
             Assert.Single(fixture.Engine.GetSystem().CleanupPending);
             Assert.True(File.Exists(fixture.Proxy("daily")));
             await fixture.AddWatchAsync("daily.mxf");
             await fixture.ScanAsync(); await Task.Delay(120); await fixture.ScanAsync();
-            Assert.True(FileOperations.ClipOwned(fixture.Clip("daily"), yesterday.Id));
+            Assert.True(await fixture.Media.OwnsProxyAsync(fixture.Proxy("daily"), yesterday.Id, default));
             Assert.Equal(1, fixture.Media.WrapCalls);
         }
         var today = await fixture.WaitForAsync(j => j.Id != yesterday.Id && j.Stage == "Done");
-        Assert.True(FileOperations.ClipOwned(fixture.Clip("daily"), today.Id));
+        Assert.False(File.Exists(fixture.Clip("daily")));
         Assert.True(await fixture.Media.OwnsProxyAsync(fixture.Proxy("daily"), today.Id, default));
         for (var scan = 0; scan < 3; scan++) await fixture.ScanAsync();
-        Assert.True(FileOperations.ClipOwned(fixture.Clip("daily"), today.Id));
+        Assert.False(File.Exists(fixture.Clip("daily")));
         Assert.Empty(fixture.Engine.GetSystem().CleanupPending);
         Assert.All(fixture.Options.Destinations, d => Assert.True(FileOperations.ClipOwned(Path.Combine(d.Path, "daily.clip"), yesterday.Id)));
     }
@@ -384,13 +408,13 @@ public sealed class EnginePipelineTests
         public PipelineFixture()
         {
             string Root(string name) { var path = Path.Combine(temporary.Path, name); Directory.CreateDirectory(path); return path; }
-            Options = new() { Folders = new() { Watch = Root("watch"), Finished = Root("finished"), Failed = Root("failed"), Abekas = Root("abekas"), Proxy = Root("proxy"), Work = Root("work"), State = Root("state") }, Timing = new() { StabilitySeconds = .1, ReconcileSeconds = .1 } };
+            Options = new() { Folders = new() { Watch = Root("watch"), Finished = Root("finished"), Failed = Root("failed"), Proxy = Root("proxy"), Work = Root("work"), State = Root("state") }, Timing = new() { StabilitySeconds = .1, ReconcileSeconds = .1 } };
             Options.Destinations = Enumerable.Range(1, 4).Select(n => new DestinationOptions { Id = "tria" + n, Name = "TLV" + n, Path = Root("tria" + n), Host = "127.0.0.1" }).ToList();
             Store = new(Options.Folders.State);
             inventory = new(Options, NullLogger<InventoryService>.Instance);
             Engine = new(Options, Store, Media, inventory, NullLogger<JobEngine>.Instance, scanOverride: () => ScanSnapshotOverride ?? new FolderScanner(Options).Scan());
         }
-        public string Clip(string name) => Path.Combine(Options.Folders.Abekas, name + ".clip");
+        public string Clip(string name) => Store.Load().FirstOrDefault(j => j.ClipName == name)?.ArtifactPath ?? Path.Combine(Options.Folders.Work, name + ".clip");
         public string Proxy(string name) => Path.Combine(Options.Folders.Proxy, name + ".mp4");
         public Task AddWatchAsync(string name) => File.WriteAllTextAsync(Path.Combine(Options.Folders.Watch, name), "production media");
         public Task ScanAsync() => Engine.ReconcileAsync(cancellation.Token);

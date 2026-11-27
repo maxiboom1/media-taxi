@@ -6,7 +6,7 @@ using MediaTaxi.Domain;
 
 namespace MediaTaxi.Media;
 
-public sealed class MediaService(TaxiOptions options) : IMediaService
+public sealed partial class MediaService(TaxiOptions options) : IMediaService
 {
     private readonly MediaProcessRunner runner = new();
     private readonly SemaphoreSlim normalization = new(Math.Max(1, options.Workers.Normalize));
@@ -17,12 +17,16 @@ public sealed class MediaService(TaxiOptions options) : IMediaService
     public async Task<MediaInspection> InspectAsync(string source, CancellationToken cancellationToken)
     {
         var probe = await new MediaInspector(options, runner).ProbeAsync(source, cancellationToken);
-        return new MediaInspection(probe.Native, probe.Summary);
+        return new MediaInspection(probe.Native, probe.Summary, probe);
     }
 
     public async Task<PreparedMedia> PrepareAsync(string source, string workDirectory, Action<double>? progress, CancellationToken cancellationToken)
     {
         var probe = await new MediaInspector(options, runner).ProbeAsync(source, cancellationToken);
+        return await PrepareInspectedAsync(source, probe, workDirectory, progress, cancellationToken);
+    }
+    private async Task<PreparedMedia> PrepareInspectedAsync(string source, MediaProbe probe, string workDirectory, Action<double>? progress, CancellationToken cancellationToken)
+    {
         if (!probe.Native && !options.Media.AllowNormalization)
             throw new MediaMismatchException("Format mismatch: AVC-Intra100 1080p50 required and incoming normalization is disabled");
         Directory.CreateDirectory(workDirectory);
@@ -37,8 +41,7 @@ public sealed class MediaService(TaxiOptions options) : IMediaService
             videoArguments.AddRange(["-i", source, "-map", "0:v:0", "-an"]);
             if (normalize)
             {
-                var filter = (probe.Interlaced ? "bwdif=mode=send_field:parity=auto:deint=all," : "")
-                    + "fps=50,scale=1920:1080:force_original_aspect_ratio=decrease:force_divisible_by=2:flags=lanczos,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1";
+                var filter = NormalizationFilter(probe);
                 videoArguments.AddRange(["-vf", filter, "-c:v", "libx264", "-pix_fmt", "yuv422p10le", "-profile:v", "high422",
                     "-x264-params", "avcintra-class=100", "-threads", options.Media.Threads.ToString(CultureInfo.InvariantCulture), "-fps_mode", "cfr"]);
             }
@@ -143,6 +146,9 @@ public sealed class MediaService(TaxiOptions options) : IMediaService
             var two = await runner.RunAsync(options.Media.FfprobePath, ["-version"], 15, cancellationToken);
             ffprobe = two.StandardOutput.Split('\n')[0].Trim();
             var encoders = await runner.RunAsync(options.Media.FfmpegPath, ["-hide_banner", "-encoders"], 15, cancellationToken);
+            var protocols = await runner.RunAsync(options.Media.FfmpegPath, ["-hide_banner", "-protocols"], 15, cancellationToken);
+            if (OperatingSystem.IsWindows() && !protocols.StandardOutput.Split('\n').Any(l => l.Trim() == "handle"))
+                return new(false, ffmpeg, ffprobe, [], "FFmpeg requires the seekable Windows handle: input protocol.");
             var wanted = new List<string> { "libx264", "aac", "pcm_s32le" };
             if (options.Proxy.Codec == "h265") wanted.Add("libx265");
             var found = wanted.Where(x => encoders.StandardOutput.Contains(x, StringComparison.Ordinal)).ToArray();
@@ -154,7 +160,7 @@ public sealed class MediaService(TaxiOptions options) : IMediaService
                     || !avci.StandardOutput.Contains("avcintra-class", StringComparison.Ordinal))
                     return new MediaHealth(false, ffmpeg, ffprobe, found, "libx264 lacks required 10-bit 4:2:2 AVC-Intra support");
             }
-            return new MediaHealth(missing.Length == 0, ffmpeg, ffprobe, found, missing.Length == 0 ? null : "Missing encoders: " + string.Join(", ", missing));
+            return new MediaHealth(missing.Length == 0, ffmpeg, ffprobe, found.Concat(["pipe", "handle"]).ToArray(), missing.Length == 0 ? null : "Missing encoders: " + string.Join(", ", missing));
         }
         catch (Exception error) when (error is IOException or System.ComponentModel.Win32Exception or TimeoutException or InvalidOperationException)
         { return new MediaHealth(false, ffmpeg, ffprobe, [], error.Message); }

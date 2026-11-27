@@ -13,6 +13,36 @@ namespace MediaTaxi.Tests;
 public sealed class EngineRecoveryTests
 {
     [Fact]
+    public async Task ReleasedCacheResumesOnlyProxyWithoutReencodingOrRepeatingFailedCopy()
+    {
+        using var fixture = new RecoveryFixture();
+        var job = fixture.Seed("released.mxf", SourceLocation.Finished, JobStage.Proxy);
+        fixture.ReserveOutputs(job); job.Wrapped = true; job.Archived = true; job.DeliveryCompleted = true;
+        job.ExpectedFrameCount = 50; job.CacheState = "Released"; job.Destinations[0].CopyStatus = CopyState.Failed;
+        fixture.Store.Save(job);
+        using var engine = fixture.CreateEngine();
+        await fixture.PumpUntilAsync(engine, () => fixture.Store.Load().Any(j => j.Stage == JobStage.Done));
+        var done = Assert.Single(fixture.Store.Load());
+        Assert.Equal("Ready", done.ProxyStatus); Assert.Equal(CopyState.Failed, done.Destinations[0].CopyStatus);
+        Assert.Equal(0, fixture.Media.PrepareCalls); Assert.Equal(0, fixture.Media.ExtractCalls);
+        Assert.False(File.Exists(Path.Combine(fixture.Options.Destinations[0].Path, "released.clip")));
+        Assert.Equal(job.FirstSeenUtc, done.FirstSeenUtc);
+    }
+    [Fact]
+    public async Task LostCacheRegeneratesOnlyForPendingInitialDeliveryAndDoesNotRecountProcessed()
+    {
+        using var fixture = new RecoveryFixture();
+        var job = fixture.Seed("lost.mxf", SourceLocation.Finished, JobStage.Delivering);
+        fixture.ReserveOutputs(job); job.Wrapped = true; job.Archived = true; job.Mode = "Native";
+        fixture.Store.SaveWithEvent(job, "processed", DateTimeOffset.UtcNow.AddHours(-25));
+        using var engine = fixture.CreateEngine();
+        await fixture.PumpUntilAsync(engine, () => fixture.Store.Load().Any(j => j.Stage == JobStage.Done));
+        var done = Assert.Single(fixture.Store.Load());
+        Assert.Equal(1, fixture.Media.PrepareCalls); Assert.Equal(CopyState.Succeeded, done.Destinations[0].CopyStatus);
+        Assert.False(File.Exists(done.ArtifactPath)); Assert.Equal("Released", done.CacheState);
+        Assert.Equal(0, engine.GetStatistics().Processed); Assert.Equal(1, engine.GetStatistics().Imported);
+    }
+    [Fact]
     public async Task MissingSourcePausesAnInterruptedJobBeforeRetirementInsteadOfResumingDelivery()
     {
         using var fixture = new RecoveryFixture();
@@ -97,7 +127,7 @@ public sealed class EngineRecoveryTests
         await fixture.PumpUntilAsync(engine, () => fixture.Store.Load().Any(j => j.Stage == JobStage.Done));
         var done = Assert.Single(fixture.Store.Load());
         Assert.Equal("Transcoded", done.Mode);
-        Assert.Equal(1, fixture.Media.ExtractCalls); Assert.Equal(0, fixture.Media.PrepareCalls);
+        Assert.Equal(0, fixture.Media.ExtractCalls); Assert.Equal(0, fixture.Media.PrepareCalls);
         Assert.Equal(1, engine.GetStatistics().TranscodedProcessed);
         Assert.Equal(0, engine.GetStatistics().NativeProcessed);
     }
@@ -260,7 +290,7 @@ internal sealed class RecoveryFixture : IDisposable
     public RecoveryFixture()
     {
         string Root(string name) { var path = Path.Combine(temporary.Path, name); Directory.CreateDirectory(path); return path; }
-        Options = new() { Folders = new() { Watch = Root("watch"), Finished = Root("finished"), Failed = Root("failed"), Abekas = Root("abekas"), Proxy = Root("proxy"), Work = Root("work"), State = Root("state") }, Timing = new() { StabilitySeconds = 0, ReconcileSeconds = .02 } };
+        Options = new() { Folders = new() { Watch = Root("watch"), Finished = Root("finished"), Failed = Root("failed"), Proxy = Root("proxy"), Work = Root("work"), State = Root("state") }, Timing = new() { StabilitySeconds = 0, ReconcileSeconds = .02 } };
         Options.Destinations.Add(new() { Id = "tria", Name = "TLV1", Path = Root("tria"), Host = "127.0.0.1" });
         Store = new(Options.Folders.State); inventory = new(Options, NullLogger<InventoryService>.Instance);
     }
@@ -277,7 +307,8 @@ internal sealed class RecoveryFixture : IDisposable
     }
     public void ReserveOutputs(JobRecord job)
     {
-        job.ArtifactPath = Path.Combine(Options.Folders.Abekas, job.ClipName + ".clip");
+        var legacy = Path.Combine(Path.GetDirectoryName(Options.Folders.Work)!, "legacy"); Directory.CreateDirectory(legacy);
+        job.ArtifactPath = Path.Combine(legacy, job.ClipName + ".clip");
         job.ProxyPath = Path.Combine(Options.Folders.Proxy, job.ClipName + ".mp4");
         job.WorkPath = Path.Combine(Options.Folders.Work, job.Id);
         Assert.True(Store.Claim(job.ArtifactPath, job.Id, "clip")); Assert.True(Store.Claim(job.ProxyPath, job.Id, "proxy"));
@@ -315,7 +346,7 @@ internal sealed class RecoveryMedia : IMediaService
     }
     private static void AssertFresh(string work)
     {
-        Assert.False(Directory.Exists(work) && Directory.EnumerateFileSystemEntries(work).Any(), "Interrupted preparation was not cleared.");
+        Assert.False(Directory.Exists(work) && Directory.EnumerateFileSystemEntries(work).Any(p => Path.GetFileName(p) != ".owner"), "Interrupted preparation was not cleared.");
         Directory.CreateDirectory(work); File.WriteAllText(Path.Combine(work, "video.h264"), "prepared");
     }
     public async Task<ClipArtifact> WrapAsync(PreparedMedia media, string output, string id, CancellationToken ct)

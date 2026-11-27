@@ -49,7 +49,7 @@ public sealed class ReviewRegressionTests
             Folders = new()
             {
                 Watch = Path.Combine(temporary.Path, "watch"), Finished = Path.Combine(temporary.Path, "finished"),
-                Failed = Path.Combine(temporary.Path, "failed"), Abekas = root, Proxy = Path.Combine(temporary.Path, "proxy"),
+                Failed = Path.Combine(temporary.Path, "failed"), Proxy = root,
                 Work = Path.Combine(temporary.Path, "work"), State = Path.Combine(temporary.Path, "state")
             },
             Destinations = [new() { Id = "one", Path = Path.Combine(temporary.Path, "destination") }]

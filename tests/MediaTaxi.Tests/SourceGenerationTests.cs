@@ -5,6 +5,18 @@ namespace MediaTaxi.Tests;
 
 public sealed class SourceGenerationTests
 {
+    [Fact]
+    public async Task ProbedCacheWaitingSourceReplacementGetsNewGenerationAndFreshInspection()
+    {
+        using var fixture = new RecoveryFixture(); fixture.Options.Timing.StabilitySeconds = 3600;
+        var old = fixture.Seed("cache-wait.mxf", SourceLocation.Watch, JobStage.Queued);
+        old.Inspection = new(true, "old inspection"); old.CacheWaitReason = "Waiting for cache"; fixture.Store.Save(old);
+        using var engine = fixture.CreateEngine();
+        await File.AppendAllTextAsync(old.SourcePath, " changed after probing");
+        await fixture.PumpUntilAsync(engine, () => fixture.Store.Load().All(j => j.Id != old.Id));
+        var replacement = Assert.Single(fixture.Store.Load());
+        Assert.NotEqual(old.Id, replacement.Id); Assert.Null(replacement.Inspection); Assert.True(replacement.Managed);
+    }
     [Theory]
     [InlineData(SourceLocation.Finished)]
     [InlineData(SourceLocation.Failed)]
@@ -79,10 +91,10 @@ public sealed class SourceGenerationTests
         using var fixture = new RecoveryFixture();
         var existing = fixture.Seed("bootstrap.mxf", SourceLocation.Finished, JobStage.Existing);
         existing.Managed = false; fixture.Store.Save(existing); File.Delete(existing.SourcePath);
-        Directory.Delete(fixture.Options.Folders.Abekas); Directory.Delete(fixture.Options.Folders.Proxy); Directory.Delete(fixture.Options.Folders.Work);
+        Directory.Delete(fixture.Options.Folders.Proxy); Directory.Delete(fixture.Options.Folders.Work);
         using var engine = fixture.CreateEngine();
         await fixture.PumpUntilAsync(engine, () => fixture.Store.Load().Count == 0);
         Assert.Empty(engine.GetSystem().CleanupPending);
-        Assert.False(Directory.Exists(fixture.Options.Folders.Abekas)); Assert.False(Directory.Exists(fixture.Options.Folders.Proxy));
+        Assert.False(Directory.Exists(fixture.Options.Folders.Proxy));
     }
 }

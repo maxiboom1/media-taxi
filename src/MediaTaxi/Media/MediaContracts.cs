@@ -4,9 +4,10 @@ namespace MediaTaxi.Media;
 
 public sealed record PreparedMedia(string VideoPath, string AudioPath, long FrameCount,
     int AudioChannels, long TimecodeStartFrames, bool Native, string Summary);
-public sealed record ClipArtifact(string Path, string Sha256, string Uuid);
+public sealed record ClipArtifact(string Path, string Sha256, string Uuid, string? HeaderSha256 = null, string? PayloadSha256 = null);
 public sealed record ProxyArtifact(string Path, string Sha256);
-public sealed record MediaInspection(bool Native, string Summary);
+public sealed record MediaInspection(bool Native, string Summary, MediaProbe? Probe = null);
+public sealed record WrappedSource(ClipArtifact Artifact, long FrameCount);
 
 public interface IMediaService
 {
@@ -19,6 +20,13 @@ public interface IMediaService
     Task<ProxyArtifact> CreateProxyAsync(PreparedMedia media, string outputPath, string jobId, Action<double>? progress, CancellationToken cancellationToken);
     Task<MediaHealth> CheckHealthAsync(CancellationToken cancellationToken);
     Task<bool> OwnsProxyAsync(string proxy, string jobId, CancellationToken cancellationToken);
+    async Task<WrappedSource> WrapSourceAsync(string source, MediaInspection inspection, string work, string output, string id, Action<double>? progress, CancellationToken ct)
+    {
+        var prepared = await PrepareAsync(source, work, progress, ct);
+        return new(await WrapAsync(prepared, output, id, ct), prepared.FrameCount);
+    }
+    Task<ProxyArtifact> CreateSourceProxyAsync(string source, MediaInspection? inspection, long frames, string output, string id, Action<double>? progress, CancellationToken ct) =>
+        CreateProxyAsync(new PreparedMedia(source, source, frames, 8, 0, inspection?.Native ?? true, inspection?.Summary ?? ""), output, id, progress, ct);
 }
 
 public sealed class MediaMismatchException(string message) : Exception(message);

@@ -7,7 +7,7 @@ using MediaTaxi.Storage;
 using MediaTaxi.Web;
 using System.Text.Json.Serialization;
 
-if (args.Contains("--version")) { Console.WriteLine("Media Taxi 0.2.1"); return; }
+if (args.Contains("--version")) { Console.WriteLine("Media Taxi 0.3.0"); return; }
 var configIndex = Array.IndexOf(args, "--config");
 if (configIndex >= 0 && (configIndex + 1 >= args.Length || args[configIndex + 1].StartsWith("--", StringComparison.Ordinal)))
 { Console.Error.WriteLine("Configuration error: --config requires a path."); Environment.ExitCode = 2; return; }
@@ -16,6 +16,7 @@ TaxiOptions options;
 try { options = OptionsLoader.Load(configPath); }
 catch (Exception ex) when (ex is IOException or InvalidDataException or FormatException or TimeZoneNotFoundException or ArgumentException)
 { Console.Error.WriteLine($"Configuration error: {ex.Message}\nUse --config PATH; see media-taxi.example.ini."); Environment.ExitCode = 2; return; }
+foreach (var warning in options.Warnings) Console.Error.WriteLine("Configuration warning: " + warning);
 if (args.Contains("--validate-config")) { Console.WriteLine($"Configuration valid: {options.ConfigPath}"); return; }
 var builder = WebApplication.CreateBuilder(new WebApplicationOptions { Args = [], ContentRootPath = AppContext.BaseDirectory, WebRootPath = Path.Combine(AppContext.BaseDirectory, "wwwroot") });
 builder.WebHost.UseUrls(options.Web.Listen);
@@ -24,7 +25,7 @@ builder.Logging.AddFilter("Microsoft.AspNetCore", LogLevel.Warning);
 builder.Services.Configure<Microsoft.Extensions.Hosting.HostOptions>(o => o.ShutdownTimeout = TimeSpan.FromSeconds(15));
 builder.Services.ConfigureHttpJsonOptions(o => o.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 builder.Services.AddSingleton(options);
-builder.Services.AddSingleton(_ => new JobStore(options.Folders.State));
+builder.Services.AddSingleton(_ => new JobStore(options.Folders.State, options.ConfigPath));
 builder.Services.AddSingleton<IMediaService, MediaService>();
 builder.Services.AddSingleton<InventoryService>();
 builder.Services.AddHostedService(p => p.GetRequiredService<InventoryService>());
@@ -33,7 +34,7 @@ builder.Services.AddSingleton<IApplicationView>(p => p.GetRequiredService<JobEng
 builder.Services.AddHostedService(p => p.GetRequiredService<JobEngine>());
 await using var app = builder.Build();
 DashboardEndpoints.Map(app, app.Services.GetRequiredService<IApplicationView>());
-app.Logger.LogInformation("Media Taxi 0.2.1 | Config: {Config} | Dashboard: {Listen}", options.ConfigPath, options.Web.Listen);
+app.Logger.LogInformation("Media Taxi 0.3.0 | Config: {Config} | Dashboard: {Listen}", options.ConfigPath, options.Web.Listen);
 await app.RunAsync();
 
 public partial class Program;

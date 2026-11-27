@@ -46,6 +46,20 @@ public sealed class MediaIntegrationTests : IDisposable
         var prepared = await service.PrepareAsync(mxf, Path.Combine(directory, "prepare"), null, CancellationToken.None);
         Assert.True(prepared.Native); Assert.Equal(10, prepared.FrameCount); Assert.Equal(29452, prepared.TimecodeStartFrames);
         Assert.Equal(9600, PcmWave.ReadInfo(prepared.AudioPath).Samples);
+        var streamingWork = Path.Combine(directory, "stream"); Directory.CreateDirectory(streamingWork);
+        var streamingPath = Path.Combine(directory, "stream.clip");
+        var streamed = await service.WrapSourceAsync(mxf, await service.InspectAsync(mxf, default), streamingWork, streamingPath, Guid.NewGuid().ToString("N"), null, default);
+        Assert.Equal(10, streamed.FrameCount);
+        Assert.DoesNotContain(Directory.EnumerateFiles(streamingWork), f => f.EndsWith(".h264", StringComparison.OrdinalIgnoreCase));
+        var streamedMedia = await service.ExtractClipAsync(streamingPath, Path.Combine(directory, "stream-extract"), default);
+        Assert.Equal(await File.ReadAllBytesAsync(prepared.VideoPath), await File.ReadAllBytesAsync(streamedMedia.VideoPath));
+        var preparedPcm = await File.ReadAllBytesAsync(prepared.AudioPath); var streamedPcm = await File.ReadAllBytesAsync(streamedMedia.AudioPath);
+        Assert.Equal(preparedPcm.AsSpan((int)PcmWave.ReadInfo(prepared.AudioPath).DataOffset).ToArray(), streamedPcm.AsSpan((int)PcmWave.ReadInfo(streamedMedia.AudioPath).DataOffset).ToArray());
+        Assert.Equal(29452, streamedMedia.TimecodeStartFrames);
+        Assert.NotNull(streamed.Artifact.HeaderSha256); Assert.NotNull(streamed.Artifact.PayloadSha256);
+        var published = Path.Combine(directory, "publish.clip");
+        await Storage.ClipPublisher.PublishAsync(streamingPath, published, published + ".partial", "", false, default, null, streamed.Artifact.HeaderSha256, streamed.Artifact.PayloadSha256);
+        Assert.Equal(await File.ReadAllBytesAsync(streamingPath), await File.ReadAllBytesAsync(published));
         var jobId = Guid.NewGuid().ToString("N"); var clip = Path.Combine(directory, "result.clip");
         await service.WrapAsync(prepared, clip, jobId, CancellationToken.None);
         var recovered = await service.ExtractClipAsync(clip, Path.Combine(directory, "recovered"), CancellationToken.None);
@@ -77,6 +91,29 @@ public sealed class MediaIntegrationTests : IDisposable
         using var hevcJson = JsonDocument.Parse(hevcProbe.StandardOutput);
         Assert.Equal("hevc", hevcJson.RootElement.GetProperty("streams")[0].GetProperty("codec_name").GetString());
         Assert.Equal("10", hevcJson.RootElement.GetProperty("streams")[0].GetProperty("nb_read_frames").GetString());
+        options.Proxy.Codec = "h264";
+        var sourceProxy = Path.Combine(directory, "source-proxy.mp4");
+        File.Delete(streamingPath);
+        await service.CreateSourceProxyAsync(mxf, await service.InspectAsync(mxf, default), 10, sourceProxy, jobId, null, default);
+        Assert.True(await service.OwnsProxyAsync(sourceProxy, jobId, default));
+        var sourceProbe = await runner.RunAsync(options.Media.FfprobePath, ["-v", "error", "-count_frames", "-show_entries", "stream=nb_read_frames,codec_type,channels", "-of", "json", sourceProxy], 30, default);
+        using var sourceJson = JsonDocument.Parse(sourceProbe.StandardOutput);
+        Assert.Equal("10", sourceJson.RootElement.GetProperty("streams")[0].GetProperty("nb_read_frames").GetString());
+        Assert.Equal(2, sourceJson.RootElement.GetProperty("streams")[1].GetProperty("channels").GetInt32());
+        options.Proxy.Codec = "h265";
+        var sourceHevc = Path.Combine(directory, "source-hevc.mp4");
+        await service.CreateSourceProxyAsync(mxf, await service.InspectAsync(mxf, default), 10, sourceHevc, jobId, null, default);
+        var sourceHevcProbe = await runner.RunAsync(options.Media.FfprobePath, ["-v", "error", "-select_streams", "v:0", "-count_frames", "-show_entries", "stream=codec_name,nb_read_frames", "-of", "json", sourceHevc], 30, default);
+        using var sourceHevcJson = JsonDocument.Parse(sourceHevcProbe.StandardOutput);
+        Assert.Equal("hevc", sourceHevcJson.RootElement.GetProperty("streams")[0].GetProperty("codec_name").GetString());
+        Assert.Equal("10", sourceHevcJson.RootElement.GetProperty("streams")[0].GetProperty("nb_read_frames").GetString());
+        // Keep the inherited handle actively seeking through loops while moving/deleting its name.
+        var handleStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var inherited = runner.RunSourceAsync(options.Media.FfmpegPath, ["-nostdin", "-loglevel", "error", "-progress", "pipe:1", "-stats_period", "0.05", "-re", "-stream_loop", "-1", "-i", "handle:", "-t", "1", "-f", "null", "-"], mxf, 30, default, 1, _ => handleStarted.TrySetResult());
+        await handleStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.False(inherited.IsCompleted);
+        File.Move(mxf, mxf + ".moved"); File.Delete(mxf + ".moved");
+        await inherited;
     }
 
     [RequiresFfmpeg]
@@ -99,6 +136,12 @@ public sealed class MediaIntegrationTests : IDisposable
         Assert.Equal(9600, PcmWave.ReadInfo(prepared.AudioPath).Samples);
         var artifact = await service.WrapAsync(prepared, Path.Combine(directory, "normalized.clip"), Guid.NewGuid().ToString("N"), CancellationToken.None);
         Assert.True(File.Exists(artifact.Path));
+        var sourceProxy = Path.Combine(directory, "normalized-source.mp4");
+        await service.CreateSourceProxyAsync(source, await service.InspectAsync(source, default), prepared.FrameCount, sourceProxy, Guid.NewGuid().ToString("N"), null, default);
+        var result = await runner.RunAsync(options.Media.FfprobePath, ["-v", "error", "-count_frames", "-show_entries", "stream=codec_type,nb_read_frames,channels", "-of", "json", sourceProxy], 30, default);
+        using var normalizedJson = JsonDocument.Parse(result.StandardOutput);
+        Assert.Equal("10", normalizedJson.RootElement.GetProperty("streams")[0].GetProperty("nb_read_frames").GetString());
+        Assert.Equal(2, normalizedJson.RootElement.GetProperty("streams")[1].GetProperty("channels").GetInt32());
     }
 
     [Fact]

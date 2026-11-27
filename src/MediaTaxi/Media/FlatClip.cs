@@ -32,6 +32,7 @@ public static class FlatClip
         var padding = new byte[512];
         var createdUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        using var payloadHash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         try
         {
             await using (var output = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None,
@@ -44,8 +45,8 @@ public static class FlatClip
                     {
                         await video.ReadExactlyAsync(videoBuffer.AsMemory(0, AvciValidator.FrameBytes), cancellationToken);
                         AvciValidator.ValidateFrame(videoBuffer.AsSpan(0, AvciValidator.FrameBytes));
-                        await WriteHashAsync(output, videoBuffer.AsMemory(0, AvciValidator.FrameBytes), hash, cancellationToken);
-                        await WriteHashAsync(output, padding, hash, cancellationToken);
+                        await WriteHashAsync(output, videoBuffer.AsMemory(0, AvciValidator.FrameBytes), hash, cancellationToken, payloadHash);
+                        await WriteHashAsync(output, padding, hash, cancellationToken, payloadHash);
                     }
                 }
                 await using var input = File.OpenRead(media.AudioPath);
@@ -55,14 +56,16 @@ public static class FlatClip
                 {
                     await input.ReadExactlyAsync(audioBuffer.AsMemory(0, 960 * audio.Channels * 4), cancellationToken);
                     PcmWave.PackRecord(audioBuffer.AsSpan(0, 960 * audio.Channels * 4), audio.Channels, auk, unchecked(sequence + (uint)frame));
-                    await WriteHashAsync(output, auk, hash, cancellationToken);
+                    await WriteHashAsync(output, auk, hash, cancellationToken, payloadHash);
                 }
                 await output.FlushAsync(cancellationToken);
                 output.Flush(flushToDisk: true);
             }
             cancellationToken.ThrowIfCancellationRequested();
             File.Move(temporary, outputPath, overwrite: false);
-            return new ClipArtifact(outputPath, Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant(), uuid);
+            return new ClipArtifact(outputPath, Convert.ToHexStringLower(hash.GetHashAndReset()), uuid,
+                Convert.ToHexStringLower(SHA256.HashData(BuildHeader(media.FrameCount, uuid, media.TimecodeStartFrames, createdUnix))),
+                Convert.ToHexStringLower(payloadHash.GetHashAndReset()));
         }
         finally
         {
@@ -180,6 +183,6 @@ public static class FlatClip
         finally { ArrayPool<byte>.Shared.Return(record); }
     }
 
-    private static async Task WriteHashAsync(Stream output, ReadOnlyMemory<byte> data, IncrementalHash hash, CancellationToken token)
-    { await output.WriteAsync(data, token); hash.AppendData(data.Span); }
+    private static async Task WriteHashAsync(Stream output, ReadOnlyMemory<byte> data, IncrementalHash hash, CancellationToken token, IncrementalHash? payload = null)
+    { await output.WriteAsync(data, token); hash.AppendData(data.Span); payload?.AppendData(data.Span); }
 }

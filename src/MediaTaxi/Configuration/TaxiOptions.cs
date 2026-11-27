@@ -7,6 +7,8 @@ public sealed class TaxiOptions
     public WorkerOptions Workers { get; set; } = new();
     public MediaOptions Media { get; set; } = new();
     public ProxyOptions Proxy { get; set; } = new();
+    public CacheOptions Cache { get; set; } = new();
+    public List<string> Warnings { get; set; } = [];
     public TimingOptions Timing { get; set; } = new();
     public WebOptions Web { get; set; } = new();
     public List<DestinationOptions> Destinations { get; set; } = [];
@@ -18,9 +20,8 @@ public sealed class FolderOptions
     public string Watch { get; set; } = "";
     public string Finished { get; set; } = "";
     public string Failed { get; set; } = "";
-    public string Abekas { get; set; } = "";
     public string Proxy { get; set; } = "";
-    public string Work { get; set; } = "";
+    public string Work { get; set; } = "C:/MediaTaxiCache";
     public string State { get; set; } = "";
 }
 public sealed class WorkerOptions
@@ -41,6 +42,7 @@ public sealed class MediaOptions
 }
 public sealed class ProxyOptions
 {
+    public bool DeferWhileHiresBusy { get; set; } = true;
     public string Codec { get; set; } = "h264";
     public int Width { get; set; } = 640;
     public int Height { get; set; } = 360;
@@ -51,6 +53,13 @@ public sealed class ProxyOptions
     public int Crf { get; set; } = 26;
     public string Preset { get; set; } = "fast";
     public int[] Channels { get; set; } = [1, 2];
+}
+public sealed class CacheOptions
+{
+    public double MaxGiB { get; set; } = 64;
+    public double MinFreeGiB { get; set; } = 32;
+    public long MaxBytes => checked((long)(MaxGiB * 1073741824));
+    public long MinFreeBytes => checked((long)(MinFreeGiB * 1073741824));
 }
 public sealed class TimingOptions
 {
