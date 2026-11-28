@@ -60,7 +60,7 @@ public sealed class MediaInspector(TaxiOptions options, MediaProcessRunner runne
         var timecode = Tag(format, "timecode");
         if (string.IsNullOrWhiteSpace(timecode)) timecode = Tag(video, "timecode");
         var start = await ReadTimecodeAsync(path, timecode, rate, cancellationToken);
-        var summary = $"{Text(format, "format_name")} / {Text(video, "codec_name")} {Text(video, "profile")} {Number(video, "width")}x{Number(video, "height")} {rate:0.###}fps / {channels}ch";
+        var summary = $"{Text(format, "format_name")} / {Text(video, "codec_name")} {Text(video, "profile")} {Number(video, "width")}x{Number(video, "height")} {rate.ToString("0.###", CultureInfo.InvariantCulture)}fps / {channels}ch";
         return new MediaProbe(duration, rate, channels, native, audios.Length > 0, interlaced, start, summary);
     }
 

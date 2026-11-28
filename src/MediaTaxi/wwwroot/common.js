@@ -17,24 +17,12 @@ export function badge(text, tone = "neutral") {
   return element("span", text, `badge ${tone}`);
 }
 
-export function showError(error) {
-  const node = byId("page-error");
-  node.textContent = error ? `Unable to refresh: ${error.message || error}. Last received data remains displayed.` : "";
-  node.classList.toggle("hidden", !error);
-}
-
-export function setConnection(connected, label) {
-  const node = byId("connection");
-  node.classList.toggle("connected", connected);
-  node.replaceChildren(element("span", "", "dot"), element("span", label));
-}
-
 export function formatDate(value, timeZone) {
   if (!value) return "Never";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "Unknown";
   try {
-    return new Intl.DateTimeFormat(undefined, { timeZone, month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" }).format(date);
+    return new Intl.DateTimeFormat(undefined, { timeZone, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" }).format(date);
   } catch {
     return date.toLocaleString();
   }
@@ -56,25 +44,9 @@ export function formatUptime(value) {
 
 export function connectEvents(onChange) {
   const source = new EventSource("/api/events");
-  source.addEventListener("open", () => { setConnection(true, "Live"); onChange(); });
+  source.addEventListener("open", () => { window.dispatchEvent(new CustomEvent("taxi-connection", { detail: true })); onChange(); });
   source.addEventListener("change", onChange);
-  source.addEventListener("error", () => setConnection(false, "Reconnecting"));
+  source.addEventListener("error", () => window.dispatchEvent(new CustomEvent("taxi-connection", { detail: false })));
   window.addEventListener("pagehide", () => source.close(), { once: true });
   return source;
 }
-
-export function setProcessingNotice(system) {
-  const notice = byId("processing-notice");
-  notice.textContent = system.processingReady ? "" : `Processing paused: ${system.pauseReason || "a required system check has not passed"}`;
-  notice.classList.toggle("hidden", system.processingReady);
-}
-
-export const metricLabels = [
-  ["imported", "Imported", "First successful Media Taxi delivery"],
-  ["nativeImported", "Native imports", "Video copied without re-encoding"],
-  ["transcodedImported", "Transcoded imports", "Input normalized before wrapping"],
-  ["processed", "Processed", "Verified local clips created"],
-  ["deliveryFailures", "Delivery failures", "All destination attempts failed"],
-  ["processingFailures", "Processing failures", "Terminal ingest errors"],
-  ["proxyCompletions", "Proxies ready", "MP4 generation completed"]
-];

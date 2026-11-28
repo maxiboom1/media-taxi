@@ -17,7 +17,7 @@ try {
     }
     & $DotnetPath test (Join-Path $projectRoot 'MediaTaxi.sln') -c Release --logger 'console;verbosity=minimal'
     if ($LASTEXITCODE -ne 0) { throw 'Release tests failed.' }
-    & node (Join-Path $PSScriptRoot 'TestDashboard.mjs')
+    & node --experimental-vm-modules (Join-Path $PSScriptRoot 'TestDashboard.mjs')
     if ($LASTEXITCODE -ne 0) { throw 'Dashboard checks failed.' }
 }
 finally {

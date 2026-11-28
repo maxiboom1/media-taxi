@@ -20,20 +20,26 @@ public sealed partial class JobEngine
             var target = Path.Combine(destination.Path, job.ClipName + ".clip");
             var partial = target + "." + job.Id + ".partial";
             var resumePublication = record.CopyStatus == CopyState.InProgress;
-            Update(job, () => { record.CopyStatus = CopyState.InProgress; record.TempPath = partial; });
+            Update(job, () => { record.CopyStatus = CopyState.InProgress; record.TempPath = partial; record.CopyProgress = 0; });
+            var progressAt = System.Diagnostics.Stopwatch.GetTimestamp();
             await MeasureAsync(job, "delivery:" + destination.Id, () => ClipPublisher.PublishAsync(job.ArtifactPath!, target, partial, job.ArtifactSha256 ?? "", resumePublication, ct,
                 measurement => Update(job, () =>
                 {
                     job.Timings["copy-write:" + destination.Id] = new(measurement.WriteStartedUtc, measurement.VerifyStartedUtc, measurement.WriteSeconds, true);
                     job.Timings["copy-publish:" + destination.Id] = new(measurement.VerifyStartedUtc, DateTimeOffset.UtcNow, measurement.VerifySeconds, true);
-                }), job.HeaderSha256, job.PayloadSha256));
-            Update(job, () => { record.CopyStatus = CopyState.Succeeded; record.PublishedUtc = DateTimeOffset.UtcNow; record.TempPath = null; record.Error = null; }, eventKind: "imported");
+                }), job.HeaderSha256, job.PayloadSha256, value =>
+                {
+                    if (System.Diagnostics.Stopwatch.GetElapsedTime(progressAt).TotalMilliseconds < 250) return;
+                    progressAt = System.Diagnostics.Stopwatch.GetTimestamp();
+                    Update(job, () => record.CopyProgress = value, persist: false);
+                }));
+            Update(job, () => { record.CopyStatus = CopyState.Succeeded; record.CopyProgress = 100; record.PublishedUtc = DateTimeOffset.UtcNow; record.TempPath = null; record.Error = null; }, eventKind: "imported");
             inventory.RequestRefresh(destination.Id);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (CheckpointException) { throw; }
         catch (Exception ex)
-        { Update(job, () => { record.CopyStatus = CopyState.Failed; record.Error = DiagnosticText.Summary(ex.Message); }); }
+        { Update(job, () => { record.CopyStatus = CopyState.Failed; record.Error = DiagnosticText.Summary(ex.Message); record.ErrorDetail = DiagnosticText.Tail(ex.ToString()); }); }
         finally { destinationSlots[destination.Id].Release(); }
     }
     private async Task MoveFailedAsync(JobRecord job, CancellationToken ct)
@@ -60,7 +66,7 @@ public sealed partial class JobEngine
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return false; }
     }
     private sealed class SourceGenerationChangedException() : IOException("Source generation changed; the replacement was not moved or quarantined by the old job.");
-    private void Progress(JobRecord job, double progress) => Update(job, () => job.Progress = Math.Clamp(progress, 0, 100), persist: false);
+    private void Progress(JobRecord job, double progress) => Update(job, () => job.Progress = Math.Clamp(progress, 0, 99), persist: false);
     private async Task<IAsyncDisposable> AcquireAsync(SemaphoreSlim semaphore, string name, CancellationToken ct)
     {
         await semaphore.WaitAsync(ct); lock (gate) { activeWorkers[name]++; Changed(); }

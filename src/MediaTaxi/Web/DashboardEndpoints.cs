@@ -22,8 +22,8 @@ public static class DashboardEndpoints
             NoCache(context);
             string requested = context.Request.Query["view"].ToString();
             if (string.IsNullOrEmpty(requested)) requested = "active";
-            if (requested is not ("active" or "older"))
-                return Results.BadRequest(new { error = "view must be active or older" });
+            if (requested is not ("active" or "older" or "all"))
+                return Results.BadRequest(new { error = "view must be active, older or all" });
             return Results.Json(view.GetJobs(requested), JsonOptions);
         });
         app.MapGet("/api/jobs/{id}", (HttpContext context, string id) =>

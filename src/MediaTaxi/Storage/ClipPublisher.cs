@@ -7,7 +7,7 @@ public static class ClipPublisher
 {
     public static async Task PublishAsync(string source, string destination, string partial, string expectedHash,
         bool resumePublication, CancellationToken ct, Action<CopyMeasurement>? measurement = null,
-        string? expectedHeader = null, string? expectedPayload = null)
+        string? expectedHeader = null, string? expectedPayload = null, Action<double>? progress = null)
     {
         var length = new FileInfo(source).Length;
         if (File.Exists(destination))
@@ -24,7 +24,7 @@ public static class ClipPublisher
             await using (var input = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.Read, 1, FileOptions.Asynchronous | FileOptions.SequentialScan))
             await using (var output = new FileStream(partial, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1, FileOptions.Asynchronous | FileOptions.WriteThrough))
             {
-                var copied = await VerifiedCopyPipeline.CopyAsync(input, output, expectedHash, expectedHeader, expectedPayload, ct);
+                var copied = await VerifiedCopyPipeline.CopyAsync(input, output, expectedHash, expectedHeader, expectedPayload, ct, bytes => progress?.Invoke(Math.Min(99, bytes * 100d / Math.Max(1, length))));
                 if (copied != length) throw new IOException("Local clip byte length changed during delivery.");
                 await output.FlushAsync(ct); output.Flush(true);
             }

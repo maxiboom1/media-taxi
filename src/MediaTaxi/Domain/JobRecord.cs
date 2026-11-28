@@ -71,6 +71,9 @@ public sealed class DestinationRecord
     public DateTimeOffset? PublishedUtc { get; set; }
     public string? Error { get; set; }
     public string? TempPath { get; set; }
+    public string? ErrorDetail { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore]
+    public double? CopyProgress { get; set; }
 }
 
 public enum SourceWaitCode { None, Stability, SharingViolation, SourceBlocked, CacheCapacity }

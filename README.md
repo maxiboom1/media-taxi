@@ -1,6 +1,6 @@
 # Media Taxi
 
-**0.4.0 · Windows x64 broadcast ingest · 2026-11-27**
+**0.5.0 · Windows x64 broadcast ingest · 2026-11-28**
 
 Media Taxi watches incoming media, creates Ross Tria/Abekas `.clip` files, attempts delivery to one to four servers, moves processed originals to Finished, and creates MP4 newsroom proxies. It runs as a console application with a commented INI file and read-only web dashboards. AMP Controller, Python and Ross DLLs are not runtime dependencies.
 
@@ -40,11 +40,11 @@ New files join the native/normalization pipeline without waiting for earlier pro
 
 Each job API includes persisted `timings`: `probe`, `wrap` (combined native streaming/audio packing or normalization/wrapping), `archive`, `delivery:ID`, `copy-write:ID`, `copy-publish:ID` and `proxy`, with UTC start/end and measured seconds. Queue/readiness waiting is separate from active phase time. Delivery time includes the remote write, flush and publication, with no media readback. Timing metadata follows the job's source-owned lifetime.
 
-After publication, request a fresh read-only OGP inventory without holding the copy slot. A completed row shows Copied; awaiting Tria until fresh OGP presence is confirmed, then green **OK**. OGP presence is the operator's acceptance criterion; no duration warning/status is shown. No SMB header read, full-file checksum readback or AMP fallback is performed. Availability remains separate from historical processing outcome.
+After publication, request a fresh read-only OGP inventory without holding the copy slot. A completed copy remains yellow Copying until fresh OGP presence is confirmed, then green **OK**. OGP presence is the operator's acceptance criterion; no duration warning/status is shown. No SMB header read, full-file checksum readback or AMP fallback is performed. Availability remains separate from historical processing outcome.
 
 There is one automatic copy attempt per destination. A completed unsuccessful attempt is not retried after restart. There is no delayed delivery queue, automatic restoration or re-sync. Delivery clips are temporary and are not an operator archive. Original MXFs remain in Finished; another import requires a new managed arrival and an available output/destination name.
 
-Terminal ingest errors, unsupported formats and local name conflicts move the source to Failed. Failed-name collisions receive a unique suffix; the dashboard retains the original clip name. A source that physically cannot be moved stays visibly unresolved in Active and raises a system error. Rediscovery does not repeat conversion. A proxy failure after archival is reported separately and makes completion a warning; it never cancels high-resolution delivery or retries the proxy on restart. The original stays in Finished.
+Terminal ingest errors, unsupported formats and local name conflicts move the source to Failed. Failed-name collisions receive a unique suffix; the dashboard retains the original clip name. A source that physically cannot be moved stays visibly unresolved in the activity list and raises a system error. Rediscovery does not repeat conversion. A proxy failure after archival is reported separately and makes completion a warning; it never cancels high-resolution delivery or retries the proxy on restart. The original stays in Finished.
 
 Existing archived sources and different local artifacts are never overwritten. To reuse a name, remove/archive its tracked source, allow two successful scans and owned local cleanup to finish, and resolve any destination-name conflict. Alternatively use a new basename. There is no resend control in this release.
 
@@ -84,12 +84,23 @@ Confirmed removal cancels active conversion/proxy work, closes owned handles, re
 
 ## Dashboard and OGP availability
 
-`/` has Active and Older tabs, newest arrival first. Arrival time is immutable; inventory updates do not reorder rows.
+The Activity page uses AMP Controller's charcoal/Segoe UI language, an independent orange/white/black Media Taxi SVG mark, and a pinned header/footer. One unpaginated list includes every tracked source, sorted newest arrival first; inventory/progress updates do not change arrival ordering. Active/Older tabs, search, refresh controls, statistics cards and the clip-details dialog have been removed.
 
-- **Active:** managed arrivals from the last hour plus unresolved Watch sources regardless of age.
-- **Older:** older Finished/Failed entries and startup observations, retained while their sources exist.
+Rows are fixed at **42 px** and status boxes at **128 x 30 px**. Columns have fixed widths: Date 176 px; Clip Name and Clip Format 360 px each; Processing, Proxy and each enabled destination 144 px. Up to four destinations use their configured names. Long content is ellipsized, with full text available on hover. Table headings stay visible while rows scroll; narrow viewports scroll horizontally rather than resizing columns. Updates preserve row identity, focus and the current scroll anchor.
 
-Rows show arrival time, clip name, source format, processing stage/progress, proxy status and one column per configured destination. Search and 50-row pagination apply independently to Active and Older. Updates preserve row identity, keyboard focus and an open details dialog; continuous progress triggers at most two automatic snapshot refreshes per second. Select a clip name for read-only paths, waits, stage timings, destination results and diagnostics. Inline errors occupy at most two lines. Stages include waiting for copy, pending, probing, native rewrap, transcoding, delivery, archiving and proxy generation. Completion is green when all destinations succeeded, yellow for partial delivery and failed when none succeeded. Local processing/archive/proxy can still succeed in the all-failed case. Format mismatch and other errors retain their source location and explanation.
+Clip Format presents stored original-source metadata compactly, for example **MXF/ Intra 1920x1080 50fps / 2ch / Dur: 1:31**. Duration is whole minutes:seconds, truncated to whole seconds, with two second digits and minutes continuing beyond 59. The full probe summary remains available on hover; no additional media probing is launched for display. Source format labels do not determine native compatibility.
+
+Each box contains one visible text line with left-to-right background progress:
+
+| Box | Status and color |
+|---|---|
+| Processing | Waiting/Pending/Probing neutral; Probing has no growing fill. Native grows green and stays Native/full green after wrapping. Transcoding grows yellow and finishes as Transcoded/full yellow. Failed/Blocked is solid red. |
+| Proxy | Pending/Queued/Untracked neutral; Working grows green; Ready full green; Failed red. |
+| Destination | Pending neutral; Copying grows yellow from bytes written. It stays full yellow/Copying after publication until fresh OGP confirms green OK. Copy failure is red Failed, including an existing-name conflict even when OGP sees that name. |
+
+Processing, proxy and destination outcomes are independent. A failed proxy or destination does not repaint a completed native wrap as a processing failure. Later Removed/Missing/Unknown states retain their meaning below. No resend or retry is added.
+
+Full clip errors appear in custom hover/focus tooltips, fetched from the read-only detail endpoint on demand. Long diagnostics are scrollable/selectable within the viewport; Escape dismisses them. Detailed errors retain the existing 64 KiB cap and never expand a row. The footer shows system/update problems with full messages on hover and compact 24-hour Imported, Native, Transcoded and Proxies counters. The former Live indicator only described the browser's SSE connection; connection problems now appear in the footer. System retains its health sections with the shared shell and palette, with additional counters in Diagnostics.
 
 Availability is separate from historical copy outcomes:
 
@@ -112,8 +123,8 @@ The independent OGP client ports the existing tested AMP Controller handshake, n
 |---|---|
 | `/` | Activity dashboard |
 | `/admin` | System dashboard |
-| `/api/jobs?view=active` or `view=older` | Current job snapshot |
-| `/api/jobs/{id}` | Read-only source/stage/wait/timing/diagnostic details; 404 after retirement |
+| `/api/jobs?view=all` | All tracked sources, ordered by original arrival; active/older filter views also remain available |
+| `/api/jobs/{id}` | Read-only source/stage/wait/timing/diagnostic details, including destination diagnostics for tooltips; 404 after retirement |
 | `/api/events` | SSE revision notifications and heartbeat; reconnect reloads a snapshot |
 | `/api/system` | Folders, workers, media tools, servers, errors and readiness |
 | `/api/statistics` | Rolling 24-hour counters |
@@ -242,7 +253,7 @@ $env:MEDIATAXI_FFPROBE = 'C:\Tools\ffprobe.exe'
 dotnet test MediaTaxi.sln -c Release --no-restore
 ```
 
-For release verification use `./scripts/Test.ps1`: it discovers `.tools/media` or accepts `-MediaToolsDirectory`, requires both tools, runs real codec tests, and executes `node scripts/TestDashboard.mjs`. Node is a development-test dependency only, never a runtime dependency. Direct `dotnet test` skips codec cases without the environment variables. Production media is absent from Git; `MEDIATAXI_PRODUCTION_MEDIA` optionally points to local fixtures for parity qualification. Synthetic tests verify native wrapping/extraction, exact PCM/channel packing, timecode, duration/final frame, normalization, H.264/H.265 MP4s and ownership tags. Filesystem/protocol tests cover growing copies, duplicates, conflicts, source moves, all/partial/no delivery, storage outages, cancellation, locked cleanup, safe name reuse, restart, OGP framing/staleness and HTTP/SSE. A 50-file burst and simulated 500-clip day exercise the real engine, SQLite and filesystem with fake media processing; these prove orchestration correctness, not encoder/network throughput.
+For release verification use `./scripts/Test.ps1`: it discovers `.tools/media` or accepts `-MediaToolsDirectory`, requires both tools, runs real codec tests, and executes `node --experimental-vm-modules scripts/TestDashboard.mjs`. Node is a development-test dependency only, never a runtime dependency. Direct `dotnet test` skips codec cases without the environment variables. Production media is absent from Git; `MEDIATAXI_PRODUCTION_MEDIA` optionally points to local fixtures for parity qualification. Synthetic tests verify native wrapping/extraction, exact PCM/channel packing, timecode, duration/final frame, normalization, H.264/H.265 MP4s and ownership tags. Filesystem/protocol tests cover growing copies, duplicates, conflicts, source moves, all/partial/no delivery, storage outages, cancellation, locked cleanup, safe name reuse, restart, OGP framing/staleness and HTTP/SSE. A 50-file burst and simulated 500-clip day exercise the real engine, SQLite and filesystem with fake media processing; these prove orchestration correctness, not encoder/network throughput.
 
 ```powershell
 .\scripts\Publish.ps1 -MediaToolsDirectory 'C:\Tools\QualifiedFFmpeg'
@@ -257,6 +268,16 @@ Media Taxi is currently in **development**. Work and test the current version; d
 AMP Controller remains a separate read-only reference project. Media Taxi has no sibling-source runtime dependency. Agent/rule files, prompt archives, vendor research, production media, local configuration, runtime state and artifacts stay excluded from Git. Synchronize version metadata and this README for each delivered version; keep the changelog here.
 
 ## Changelog
+
+### 0.5.0 — 2026-11-28
+
+- Replace activity tabs, cards, search, paging and the details dialog with one fixed-row list using AMP Controller's palette and typography, an independent Media Taxi logo, pinned bars and compact footer counters.
+- Add single-line status boxes with background progress, persistent Native/Transcoded colors, independent proxy/destination outcomes, and yellow Copying until fresh OGP reports green OK.
+- Report per-destination progress from completed writes without additional hashing, media reads, SQLite progress writes or changed copy limits; preserve the bounded copy pipeline and publication checks.
+- Show full bounded diagnostics only in hover/focus tooltips; add the all-jobs API view, wrap-completion metadata and compact source format/duration labels generated without extra probing.
+- Preserve configuration, storage/retention behavior and no-resend policy. Apply the shared shell to System while retaining its health information.
+- Validation: **137 automated cases passed**, including copy progress, API/format checks and the real codec/engine regression suite; one optional production-fixture test was skipped. The separate 500-row/four-destination dashboard check passed. Browser checks verified fixed geometry at 1920×1080 and 1366×768, long hover diagnostics, scrolling and System. No live Tria test files or playback commands were issued.
+
 
 ### 0.4.0 — 2026-11-27
 

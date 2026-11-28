@@ -29,6 +29,9 @@ public sealed class WebEndpointTests
         Assert.DoesNotContain("durationStatus", jobs.RootElement.GetRawText());
         Assert.DoesNotContain("Unconfirmed", jobs.RootElement.GetRawText());
 
+        Assert.Equal(HttpStatusCode.OK, (await host.Client.GetAsync("/api/jobs?view=all")).StatusCode);
+        Assert.Equal("all", host.View.LastView);
+
         Assert.Equal(HttpStatusCode.BadRequest, (await host.Client.GetAsync("/api/jobs?view=invalid")).StatusCode);
         Assert.Equal(HttpStatusCode.OK, (await host.Client.GetAsync("/health/live")).StatusCode);
         Assert.Equal(HttpStatusCode.ServiceUnavailable, (await host.Client.GetAsync("/health/ready")).StatusCode);

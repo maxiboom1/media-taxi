@@ -1,47 +1,12 @@
 <!doctype html>
 <html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark">
-  <title>Media Taxi · Activity</title>
-  <link rel="stylesheet" href="/styles.css">
-  <script type="module" src="/app.js"></script>
-</head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="dark"><title>Media Taxi · Activity</title><link rel="stylesheet" href="/styles.css"><script type="module" src="/app.js"></script></head>
 <body>
-  <header class="site-header">
-    <div class="brand"><span class="brand-mark" aria-hidden="true">MT</span><div><h1>Media Taxi</h1><p>Broadcast ingest &amp; delivery</p></div></div>
-    <nav aria-label="Main navigation"><a class="selected" href="/" aria-current="page">Activity</a><a href="/admin">System</a></nav>
-    <div class="connection" id="connection" role="status"><span class="dot"></span><span>Connecting</span></div>
-  </header>
-  <main>
-    <section class="summary-strip" aria-label="Last 24 hours" id="statistics"><span>Loading counters…</span></section>
-    <div class="notice hidden" id="processing-notice" role="status"></div>
-    <section class="panel">
-      <div class="panel-heading">
-        <div class="tabs" role="tablist" aria-label="Activity period">
-          <button id="active-tab" role="tab" aria-selected="true" aria-controls="activity-panel" data-view="active">Active <span id="active-count" class="count">0</span></button>
-          <button id="older-tab" role="tab" aria-selected="false" aria-controls="activity-panel" data-view="older">Older <span id="older-count" class="count">0</span></button>
-        </div>
-        <div class="refresh"><span id="updated">Waiting for data</span><button class="text-button" id="refresh-button" type="button">Refresh</button></div>
-      </div>
-      <p class="panel-description" id="view-description">Last hour, plus unresolved files still in Watch.</p>
-      <div class="activity-controls">
-        <label for="search">Search clips <input id="search" type="search" placeholder="Name, format or status" autocomplete="off"></label>
-        <div class="pagination"><button id="previous-page" class="text-button" type="button">Previous</button><span id="page-label">Page 1</span><button id="next-page" class="text-button" type="button">Next</button></div>
-      </div>
-      <div class="table-wrap" id="activity-panel" role="tabpanel" aria-labelledby="active-tab" tabindex="0">
-        <table class="activity-table">
-          <thead id="activity-head"><tr><th scope="col">Arrived</th><th scope="col">Clip</th><th scope="col">Input format</th><th scope="col">Processing</th><th scope="col">Proxy</th></tr></thead>
-          <tbody id="activity-body"></tbody>
-        </table>
-        <div class="empty-state" id="empty-state" role="status"><strong>Waiting for incoming media</strong><span>New arrivals will appear here automatically.</span></div>
-      </div>
-      <div class="table-footer"><span id="row-count">0 clips</span><span>Read-only monitoring · no automatic re-sync</span></div>
-    </section>
-    <div class="error-message hidden" id="page-error" role="alert"></div>
-    <p class="legend"><span class="dot success"></span>OK <span class="dot failure"></span>Missing / failed <span class="dot warning"></span>Unknown / partial <span class="dot neutral"></span>Removed</p>
-    <dialog id="job-dialog" aria-labelledby="detail-title"><div class="section-heading"><h3 id="detail-title">Clip details</h3><button id="close-details" class="text-button" type="button">Close</button></div><pre id="detail-content"></pre></dialog>
+  <header class="site-header"><div class="brand"><img src="/media-taxi.svg" width="104" height="32" alt="Media Taxi"><h1>Media Taxi Ingest</h1></div><nav aria-label="Main navigation"><a class="selected" href="/" aria-current="page">Activity</a><a href="/admin">System</a></nav></header>
+  <main id="activity-scroll" class="activity-scroll" aria-label="Ingest activity">
+    <table id="activity-table" class="activity-table"><thead id="activity-head"><tr><th>Date</th><th>Clip Name</th><th>Clip Format</th><th>Processing</th><th>Proxy</th></tr></thead><tbody id="activity-body"></tbody></table>
+    <div id="empty-state" class="empty-state">Waiting for incoming media</div>
   </main>
+  <footer class="status-footer"><span id="footer-message" tabindex="0" role="status">Connecting to Media Taxi…</span><div id="footer-statistics" aria-label="Last 24 hours statistics"></div></footer>
 </body>
 </html>

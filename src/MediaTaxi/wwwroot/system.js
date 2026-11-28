@@ -1,18 +1,8 @@
-import { byId, getJson, element, badge, showError, formatDate, formatBytes, formatUptime, connectEvents, setProcessingNotice, metricLabels } from "/common.js";
+import { byId, element, badge, formatDate, formatBytes, formatUptime, connectEvents } from "/common.js";
+import { startShell, setShellSystem } from "/shell.js";
 
-let loading = false;
-let refreshTimer;
 
 function cell(text, className) { return element("td", text, className); }
-
-function renderStatistics(statistics) {
-  byId("statistics").replaceChildren(...metricLabels.map(([key, label, description]) => {
-    const card = element("article", null, "metric-card");
-    card.title = description;
-    card.append(element("span", label), element("strong", statistics[key] ?? 0), element("small", "Last 24 hours"));
-    return card;
-  }));
-}
 
 function renderList(id, messages, emptyText) {
   byId(id).replaceChildren(...(messages.length ? messages : [emptyText]).map((message) => element("li", message)));
@@ -24,7 +14,7 @@ function renderSystem(system) {
   const ready = byId("ready-badge");
   ready.textContent = system.processingReady ? "Processing available" : "Processing paused";
   ready.className = `badge ${system.processingReady ? "success" : "failure"}`;
-  setProcessingNotice(system);
+  setShellSystem(system);
   byId("updated").textContent = `Updated ${formatDate(new Date().toISOString())}`;
 
   byId("server-body").replaceChildren(...system.servers.map((server) => {
@@ -71,18 +61,10 @@ function renderSystem(system) {
   renderList("error-list", system.errors, "No current system errors.");
 }
 
-async function refresh() {
-  if (loading) return;
-  loading = true;
-  try {
-    const [system, statistics] = await Promise.all([getJson("/api/system"), getJson("/api/statistics")]);
-    renderSystem(system);
-    renderStatistics(statistics);
-    showError(null);
-  } catch (error) { showError(error); }
-  finally { loading = false; }
-}
-
-connectEvents(() => { if (!refreshTimer) refreshTimer = setTimeout(() => { refreshTimer = undefined; refresh(); }, 500); });
-refresh();
-setInterval(refresh, 10000);
+startShell(system => { renderSystem(system); });
+window.addEventListener("taxi-system", event => {
+  const statistics = event.detail.statistics;
+  for (const [key, label] of [["processed", "Processed / 24h"], ["processingFailures", "Processing failures / 24h"], ["deliveryFailures", "Delivery failures / 24h"]])
+    byId("diagnostic-details").append(element("dt", label), element("dd", statistics[key] ?? 0));
+});
+connectEvents(() => {});

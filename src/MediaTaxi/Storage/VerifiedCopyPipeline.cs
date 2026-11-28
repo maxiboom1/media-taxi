@@ -13,7 +13,7 @@ public static class VerifiedCopyPipeline
     public const int MaximumBufferBytes = BlockBytes * BufferCount;
 
     public static async Task<long> CopyAsync(Stream input, Stream output, string expectedFullHash,
-        string? expectedHeader, string? expectedPayload, CancellationToken ct)
+        string? expectedHeader, string? expectedPayload, CancellationToken ct, Action<long>? written = null)
     {
         using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(ct);
         var token = lifetime.Token;
@@ -56,11 +56,13 @@ public static class VerifiedCopyPipeline
                 await lifetime.CancelAsync(); throw;
             }
         }, CancellationToken.None);
+        long delivered = 0;
         try
         {
             await foreach (var chunk in ready.Reader.ReadAllAsync(token))
             {
                 await output.WriteAsync(chunk.Buffer.AsMemory(0, chunk.Count), token);
+                delivered += chunk.Count; written?.Invoke(delivered);
                 await available.Writer.WriteAsync(chunk.Buffer, token);
             }
             return await producer;
