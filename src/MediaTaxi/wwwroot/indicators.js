@@ -13,7 +13,7 @@ export function processingState(job) {
     return state(native ? "Native" : complete ? "Transcoded" : "Transcoding", native ? "green" : "yellow", complete ? 100 : percent(job.progress), complete ? `${native ? "Native rewrap" : "Transcoding"} completed` : `${native ? "Native rewrap" : "Transcoding"}: ${Math.round(percent(job.progress))}%`, false, !complete);
   }
   if (job.stage === "Existing") return job.location === "Failed" ? failed("Source found in Failed; historical reason unavailable.") : state("Existing", "neutral", 0, "Existing source; no import was started");
-  return state(job.stage === "Waiting" ? "Waiting" : "Pending", "neutral", 0, job.waitReason || job.cacheWaitReason || "Waiting for a processing worker");
+  return state(job.stage === "Waiting" ? "Detected" : "Pending", "neutral", 0, job.waitReason || job.cacheWaitReason || "Waiting for a processing worker");
 }
 export function proxyState(job) {
   if (job.proxyStatus === "Failed") return failed(job.error || "Proxy generation failed");

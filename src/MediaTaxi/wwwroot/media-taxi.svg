@@ -1,7 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="104" height="32" viewBox="0 0 104 32" role="img" aria-labelledby="title">
-  <title id="title">Media Taxi</title>
-  <rect x=".5" y=".5" width="103" height="31" rx="6" fill="#000" stroke="#f26956"/>
-  <path d="M67 1h30a6 6 0 0 1 6 6v18a6 6 0 0 1-6 6H67l11-15z" fill="#f26956"/>
-  <path d="M11 23V9h3l6 8 6-8h3v14h-4V15l-5 6-5-6v8zM34 9h24v4H48v10h-4V13H34z" fill="#fff"/>
-  <path d="m85 9 8 7-8 7h6l8-7-8-7z" fill="#000"/>
-</svg>

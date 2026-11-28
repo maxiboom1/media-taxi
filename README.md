@@ -1,6 +1,6 @@
 # Media Taxi
 
-**0.5.0 · Windows x64 broadcast ingest · 2026-11-28**
+**0.5.1 · Windows x64 broadcast ingest · 2026-11-28**
 
 Media Taxi watches incoming media, creates Ross Tria/Abekas `.clip` files, attempts delivery to one to four servers, moves processed originals to Finished, and creates MP4 newsroom proxies. It runs as a console application with a commented INI file and read-only web dashboards. AMP Controller, Python and Ross DLLs are not runtime dependencies.
 
@@ -84,9 +84,9 @@ Confirmed removal cancels active conversion/proxy work, closes owned handles, re
 
 ## Dashboard and OGP availability
 
-The Activity page uses AMP Controller's charcoal/Segoe UI language, an independent orange/white/black Media Taxi SVG mark, and a pinned header/footer. One unpaginated list includes every tracked source, sorted newest arrival first; inventory/progress updates do not change arrival ordering. Active/Older tabs, search, refresh controls, statistics cards and the clip-details dialog have been removed.
+The Activity page uses AMP Controller's charcoal/Segoe UI language and a pinned header/footer. The header shows Media Taxi Ingest without a logo. One unpaginated list includes every tracked source, sorted newest arrival first; inventory/progress updates do not change arrival ordering. Active/Older tabs, search, refresh controls, statistics cards and the clip-details dialog have been removed.
 
-Rows are fixed at **42 px** and status boxes at **128 x 30 px**. Columns have fixed widths: Date 176 px; Clip Name and Clip Format 360 px each; Processing, Proxy and each enabled destination 144 px. Up to four destinations use their configured names. Long content is ellipsized, with full text available on hover. Table headings stay visible while rows scroll; narrow viewports scroll horizontally rather than resizing columns. Updates preserve row identity, focus and the current scroll anchor.
+The table fills the available horizontal width. Rows are fixed at **42 px** and status boxes at **128 x 30 px**. Date stays 176 px; Processing, Proxy and each enabled destination stay 144 px. Clip Name and Clip Format share the remaining width equally, with a minimum of 360 px each. Column geometry depends on viewport width and configured destinations, never content. Up to four destinations use their configured names. Long content is ellipsized, with full text available on hover. Table headings stay visible while rows scroll; viewports narrower than the combined minimum widths scroll horizontally. Updates preserve row identity, focus and the current scroll anchor.
 
 Clip Format presents stored original-source metadata compactly, for example **MXF/ Intra 1920x1080 50fps / 2ch / Dur: 1:31**. Duration is whole minutes:seconds, truncated to whole seconds, with two second digits and minutes continuing beyond 59. The full probe summary remains available on hover; no additional media probing is launched for display. Source format labels do not determine native compatibility.
 
@@ -94,7 +94,7 @@ Each box contains one visible text line with left-to-right background progress:
 
 | Box | Status and color |
 |---|---|
-| Processing | Waiting/Pending/Probing neutral; Probing has no growing fill. Native grows green and stays Native/full green after wrapping. Transcoding grows yellow and finishes as Transcoded/full yellow. Failed/Blocked is solid red. |
+| Processing | Detected during the copy-stability wait; Pending while queued; Probing during inspection. These are neutral without growing fill. Native grows green and stays Native/full green after wrapping. Transcoding grows yellow and finishes as Transcoded/full yellow. Failed/Blocked is solid red. |
 | Proxy | Pending/Queued/Untracked neutral; Working grows green; Ready full green; Failed red. |
 | Destination | Pending neutral; Copying grows yellow from bytes written. It stays full yellow/Copying after publication until fresh OGP confirms green OK. Copy failure is red Failed, including an existing-name conflict even when OGP sees that name. |
 
@@ -268,6 +268,13 @@ Media Taxi is currently in **development**. Work and test the current version; d
 AMP Controller remains a separate read-only reference project. Media Taxi has no sibling-source runtime dependency. Agent/rule files, prompt archives, vendor research, production media, local configuration, runtime state and artifacts stay excluded from Git. Synchronize version metadata and this README for each delivered version; keep the changelog here.
 
 ## Changelog
+
+### 0.5.1 — 2026-11-28
+
+- Fill the activity table's available width by expanding Clip Name and Clip Format evenly; retain fixed status boxes, row heights and minimum widths with horizontal scrolling on narrower screens.
+- Remove the logo and unused SVG asset from both page headers, leaving Media Taxi Ingest and the Activity/System navigation.
+- Show Detected in the processing box during the initial copy-stability window, then Probing when inspection starts; readiness timing is unchanged.
+- Validation: the 500-entry dashboard check passed; browser checks verified full-width rows with one and four destinations at 1920 px, fixed status boxes and horizontal scrolling at 1366 px, text-only Activity/System headers, and the Detected stability-wait label. Deployment preserves current INI/state and leaves the console stopped.
 
 ### 0.5.0 — 2026-11-28
 
